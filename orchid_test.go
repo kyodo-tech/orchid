@@ -1,0 +1,364 @@
+package orchid_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	orchid "github.com/kyodo-tech/orchid"
+	"github.com/kyodo-tech/orchid/persistence"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestOrchestrator_WorkflowSimple(t *testing.T) {
+	// Create an orchestrator with the in-memory persister
+	o := orchid.NewOrchestrator()
+	ctx := context.Background()
+	type testkey string
+	ctx = context.WithValue(ctx, testkey("testkey"), "testvalue")
+
+	// Register activities
+	o.RegisterActivity("A", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'A'), nil
+	})
+
+	o.RegisterActivity("B", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'B'), nil
+	})
+
+	o.RegisterActivity("C", func(ctx context.Context, input []byte) ([]byte, error) {
+		ctxTestValue := ctx.Value(testkey("testkey"))
+		assert.Equal(t, "testvalue", ctxTestValue)
+		return append(input, 'C'), nil
+	})
+
+	var err error
+
+	// Create a workflow
+	wf := orchid.NewWorkflow("test_workflow")
+	err = wf.AddNode(orchid.NewNode("A"))
+	assert.NoError(t, err)
+	err = wf.AddNode(orchid.NewNode("B"))
+	assert.NoError(t, err)
+	err = wf.AddNode(orchid.NewNode("C"))
+	assert.NoError(t, err)
+
+	wf.Link("A", "B")
+	wf.Link("B", "C")
+
+	// Load the workflow into the orchestrator
+	o.LoadWorkflow(wf)
+
+	// Start the workflow
+	workflowID := uuid.New().String()
+	ctx = orchid.WithWorkflowID(ctx, workflowID)
+
+	out, err := o.Start(ctx, []byte{})
+	if err != nil {
+		t.Logf("Start returned error: %v", err)
+	}
+
+	assert.Equal(t, "ABC", string(out))
+}
+
+func TestOrchestrator_WorkflowsWithRouting(t *testing.T) {
+	// Create an orchestrator with the in-memory persister
+	o := orchid.NewOrchestrator()
+
+	// Register activities
+	o.RegisterActivity("A", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'A'), orchid.RouteTo("C")
+	})
+
+	o.RegisterActivity("B", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'B'), nil
+	})
+
+	o.RegisterActivity("C", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'C'), nil
+	})
+
+	o.RegisterActivity("D", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'D'), nil
+	})
+
+	// Create a workflow
+	wf := orchid.NewWorkflow("test_workflow")
+	wf.AddNode(orchid.NewNode("A"))
+	wf.AddNode(orchid.NewNode("B"))
+	wf.AddNode(orchid.NewNode("C"))
+	wf.AddNode(orchid.NewNode("D"))
+
+	wf.Link("A", "B")
+	wf.Link("A", "C")
+	wf.Link("C", "D")
+
+	// Load the workflow into the orchestrator
+	o.LoadWorkflow(wf)
+
+	// Start the workflow
+	workflowID := uuid.New().String()
+	ctx := orchid.WithWorkflowID(context.Background(), workflowID)
+
+	out, err := o.Start(ctx, []byte{'Z'})
+	if err != nil {
+		t.Logf("Start returned error: %v", err)
+	}
+
+	assert.Equal(t, "ZACD", string(out))
+
+	// Replace A activity with a new one that routes to B
+	o.RegisterActivity("A", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'A'), orchid.RouteTo("B")
+	})
+
+	// Rerun the workflow
+	out, err = o.Start(ctx, []byte{'Z'})
+	if err != nil {
+		t.Logf("Start returned error on rerun: %v", err)
+	}
+
+	assert.Equal(t, "ZAB", string(out))
+}
+
+func TestOrchestrator_RestoreWorkflowAfterPanic(t *testing.T) {
+	persister, err := persistence.NewSQLitePersister(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create SQLite persister: %v", err)
+	}
+	defer persister.DB.Close()
+
+	// Create an orchestrator with the in-memory persister
+	o := orchid.NewOrchestrator(
+		orchid.WithPersistence(persister),
+	)
+
+	// Register activities
+	o.RegisterActivity("A", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'A'), nil
+	})
+
+	nodeB := orchid.NewNode("B", orchid.WithNodeRetryPolicy(&orchid.RetryPolicy{
+		MaxRetries:         3,
+		InitInterval:       100 * time.Millisecond,
+		MaxInterval:        500 * time.Millisecond,
+		BackoffCoefficient: 1.0,
+	}))
+
+	o.RegisterActivity("B", func(ctx context.Context, input []byte) ([]byte, error) {
+		panic("simulated failure in activity B")
+	})
+
+	o.RegisterActivity("C", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'C'), nil
+	})
+
+	// Create a workflow
+	wf := orchid.NewWorkflow("test_workflow")
+	wf.AddNode(orchid.NewNode("A"))
+	wf.AddNode(nodeB)
+	wf.AddNode(orchid.NewNode("C"))
+
+	wf.Link("A", "B")
+	wf.Link("B", "C")
+
+	// Load the workflow into the orchestrator
+	o.LoadWorkflow(wf)
+
+	// Start the workflow
+	workflowID := uuid.New().String()
+	ctx := orchid.WithWorkflowID(context.Background(), workflowID)
+
+	var recovered bool
+	// run recoverable code
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				recovered = true
+			}
+		}()
+
+		_, err := o.Start(ctx, []byte{})
+		if err != nil {
+			t.Logf("Start returned error: %v", err)
+		}
+	}()
+
+	assert.True(t, recovered, "Expected panic in Start")
+
+	err = verifyState(t, persister, 3, workflowID, "B")
+	assert.NoError(t, err)
+
+	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 1)
+	assert.NoError(t, err)
+
+	// Now, simulate a restart by creating a new orchestrator
+	o2 := orchid.NewOrchestrator(
+		orchid.WithPersistence(persister),
+	)
+
+	// Register activities with the new orchestrator
+	o2.RegisterActivity("A", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'A'), nil
+	})
+
+	o2.RegisterActivity("B", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'B'), nil
+	})
+
+	o2.RegisterActivity("C", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'C'), nil
+	})
+
+	// Load the workflow into the new orchestrator
+	o2.LoadWorkflow(wf)
+
+	restorable, err := o2.RestorableWorkflows(ctx)
+	assert.NoError(t, err)
+
+	var out []byte
+	for _, workflows := range restorable {
+		for _, w := range workflows {
+			out, err = w(ctx)
+			assert.NoError(t, err)
+		}
+	}
+
+	assert.Equal(t, "ABC", string(out))
+
+	err = verifyState(t, persister, 7, workflowID, "C")
+	assert.NoError(t, err)
+
+	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 0)
+	assert.NoError(t, err)
+}
+
+func TestOrchestrator_RestoreWorkflowAfterPanicWithRouting(t *testing.T) {
+	persister, err := persistence.NewSQLitePersister(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create SQLite persister: %v", err)
+	}
+	defer persister.DB.Close()
+
+	// Create an orchestrator with the in-memory persister
+	o := orchid.NewOrchestrator(
+		orchid.WithPersistence(persister),
+	)
+
+	// Register activities
+	o.RegisterActivity("A", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'A'), orchid.RouteTo("C")
+	})
+
+	o.RegisterActivity("B", func(ctx context.Context, input []byte) ([]byte, error) {
+		panic("this workflow should never reach node B")
+	})
+
+	o.RegisterActivity("C", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'C'), nil
+	})
+
+	o.RegisterActivity("D", func(ctx context.Context, input []byte) ([]byte, error) {
+		panic("initial failure in activity D")
+	})
+
+	// Create a workflow
+	wf := orchid.NewWorkflow("test_workflow")
+	wf.AddNode(orchid.NewNode("A"))
+	wf.AddNode(orchid.NewNode("B"))
+	wf.AddNode(orchid.NewNode("C"))
+	wf.AddNode(orchid.NewNode("D", orchid.WithNodeRetryPolicy(&orchid.RetryPolicy{
+		InitInterval:       100 * time.Millisecond,
+		MaxInterval:        500 * time.Millisecond,
+		BackoffCoefficient: 1.0,
+	})))
+
+	wf.Link("A", "B")
+	wf.Link("A", "C")
+	wf.Link("C", "D")
+
+	// Load the workflow into the orchestrator
+	o.LoadWorkflow(wf)
+
+	// Start the workflow
+	workflowID := uuid.New().String()
+	ctx := orchid.WithWorkflowID(context.Background(), workflowID)
+
+	var recovered bool
+	// run recoverable code
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				recovered = true
+			}
+		}()
+
+		_, err := o.Start(ctx, []byte{})
+		if err != nil {
+			t.Logf("Start returned error: %v", err)
+		}
+	}()
+
+	assert.True(t, recovered, "Expected panic in Start")
+
+	// 2x successful nodes + 1 failure
+	err = verifyState(t, persister, 5, workflowID, "D")
+	assert.NoError(t, err)
+
+	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 1)
+	assert.NoError(t, err)
+
+	// Replace D activity with one that completes
+	o.RegisterActivity("D", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'D'), nil
+	})
+
+	restorable, err := o.RestorableWorkflows(ctx)
+	assert.NoError(t, err)
+
+	var out []byte
+	for _, workflows := range restorable {
+		for _, w := range workflows {
+			out, err = w(ctx)
+			assert.NoError(t, err)
+		}
+	}
+
+	assert.Equal(t, "ACD", string(out))
+
+	// 5+ 2x2 open complete on D and
+	err = verifyState(t, persister, 9, workflowID, "D")
+	assert.NoError(t, err)
+
+	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 0)
+	assert.NoError(t, err)
+}
+
+func verifyState(t *testing.T, persister persistence.Persister, nsteps int, workflowID, lastActivityName string) error {
+	// Verify that the workflow completed successfully
+	steps, err := persister.LoadWorkflowSteps(context.Background(), workflowID)
+	assert.NoError(t, err)
+	if !assert.Equal(t, len(steps), nsteps, fmt.Sprintf("Expected at least %v steps in the workflow log", nsteps)) {
+		return fmt.Errorf("Expected at least %v steps in the workflow log", nsteps)
+	}
+
+	// Check that the final step is activity "C" and completed successfully
+	lastStep := steps[len(steps)-1]
+	assert.Equal(t, lastActivityName, lastStep.ActivityName)
+	// assert.Equal(t, persistence.StateCompleted, lastStep.ActivityState)
+
+	return nil
+}
+
+func verifyOpenWorkflowCount(t *testing.T, persister persistence.Persister, workflowName string, expectedCount int) error {
+	// Verify the workflow status is now completed
+	workflows, err := persister.LoadOpenWorkflows(context.Background(), workflowName)
+	assert.NoError(t, err)
+	if !assert.Len(t, workflows, expectedCount) {
+		return fmt.Errorf("Expected %v open workflows, got %v", expectedCount, len(workflows))
+	}
+
+	return nil
+}
