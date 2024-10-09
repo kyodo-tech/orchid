@@ -845,7 +845,7 @@ func (n *Node) RetryAttempts(ctx context.Context) int {
 
 // executeNodeChain executes a chain of nodes and returns the output.
 // If the chain contains a merge point, the outputs are merged using the reducer
-// if present or uses the preceeding fan-out nodes output.  Parallel nodes must
+// if present or uses the preceding fan-out nodes output.  Parallel nodes must
 // converge at a merge node.
 func (o *Orchestrator) executeNodeChain(ctx context.Context, node *Node, data []byte) ([]byte, error) {
 	ctx = node.withActivityStartTime(ctx, time.Now().UTC())

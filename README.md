@@ -1,5 +1,8 @@
 # Orchid: Dynamic Dataflow Orchestration
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/kyodo-tech/orchid)](https://goreportcard.com/report/github.com/kyodo-tech/orchid)
+[![GoDoc](https://godoc.org/github.com/kyodo-tech/orchid?status.svg)](https://godoc.org/github.com/kyodo-tech/orchid)
+
 Orchid is a lightweight Go framework for orchestrating data-driven workflows. It combines concepts from Flow-Based Programming (FBP) and workflow engines to provide a simple, fault-tolerant solution for managing data flows and task execution within applications.
 
 Inspired by tools like [Uber Cadence](https://github.com/uber/cadence) and [Temporal.io](https://temporal.io/), Orchid offers a minimalistic approach to workflow orchestration without the complexity and heavy dependencies often found in other solutions. It was created out of a lack of a simple executor such as [temporalite](https://github.com/temporalio/temporalite), but is no longer maintained. Other solutions are often complex with many dependencies.
