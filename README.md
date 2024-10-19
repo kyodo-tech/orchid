@@ -27,7 +27,7 @@ Use Cases:
 - **Agent-Based Models**: Manage the interactions and behaviors of agents in simulations.
 
 Connections to Related Concepts:
-- **Workflow Engines**: Orchid shares foundational similarities with other DAG-based workflow engines like Airflow and Prefect but focuses on simplicity and ease of use. It provides a streamlined configuration format, error-based routing, and supports both local and remote execution.
+- **Workflow Engines**: Orchid shares foundational similarities with other DAG-based workflow engines like Airflow and Prefect but focuses on simplicity and ease of use and does allow for loops for retries. It provides a streamlined configuration format, error-based routing, and supports both local and remote execution.
 - **Flow-Based Programming**: The serial execution and data passing between nodes resemble flow-based programming paradigms, but Orchid offers additional features like triggers, callbacks, and conditional branching for more complex orchestration.
 - **Agent-Based Modeling (ABM)**: Orchid's ability to represent dependencies and trigger workflows based on events aligns well with the interaction patterns of agent-based models.
 - **Large language model (LLM) agents**: The flexibility to pass data and handle conditional branching can be applied in orchestrating tasks involving language models.
@@ -63,6 +63,14 @@ wf := orchid.NewWorkflow("example_workflow")
 wf.AddNode(orchid.NewNode("task1"))
 wf.AddNode(orchid.NewNode("task2"))
 wf.Link("task1", "task2")
+```
+
+Or use the fluent API for linear use cases:
+
+```go
+wf := orchid.NewWorkflow("example_workflow").
+    AddNode(orchid.NewNode("task1")).
+    Then(orchid.NewNode("task2"))
 ```
 
 Implement an **Activity**: Define the logic for each task in the workflow.
@@ -112,6 +120,20 @@ if err != nil {
 defer persister.DB.Close()
 
 o := orchid.NewOrchestrator(orchid.WithPersistence(persister))
+```
+
+We can also pass a default retry policy for all nodes if desired:
+
+```go
+o := orchid.NewOrchestratorWithWorkflow(wf,
+    orchid.WithDefaultRetryPolicy(&orchid.RetryPolicy{
+        MaxRetries:         3,
+        InitInterval:       2 * time.Second,
+        MaxInterval:        30 * time.Second,
+        BackoffCoefficient: 2.0,
+    }),
+    // ... other options ...
+)
 ```
 
 ## Middleware Support

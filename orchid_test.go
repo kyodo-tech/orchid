@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	orchid "github.com/kyodo-tech/orchid"
 	"github.com/kyodo-tech/orchid/persistence"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -52,15 +52,9 @@ func TestOrchestrator_WorkflowSimple(t *testing.T) {
 
 	// Create a workflow
 	wf := orchid.NewWorkflow("test_workflow")
-	err = wf.AddNode(orchid.NewNode("A"))
-	assert.NoError(t, err)
-	err = wf.AddNode(orchid.NewNode("B"))
-	assert.NoError(t, err)
-	err = wf.AddNode(orchid.NewNode("C"))
-	assert.NoError(t, err)
-
-	wf.Link("A", "B")
-	wf.Link("B", "C")
+	wf.AddNode(orchid.NewNode("A")).
+		Then(orchid.NewNode("B")).
+		Then(orchid.NewNode("C"))
 
 	// Load the workflow into the orchestrator
 	o.LoadWorkflow(wf)

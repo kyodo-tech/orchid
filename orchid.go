@@ -88,9 +88,9 @@ func (wf *Workflow) getActivityNameByNodeID(id int64) (string, bool) {
 }
 
 // AddNode adds a new task to the workflow.
-func (wf *Workflow) AddNode(node *Node) error {
+func (wf *Workflow) AddNode(node *Node) *Workflow {
 	if _, exists := wf.Nodes[node.ActivityName]; exists {
-		return fmt.Errorf("node %s: %w", node.ActivityName, ErrWorkflowNodeAlreadyExists)
+		panic(fmt.Sprintf("node %s: %v", node.ActivityName, ErrWorkflowNodeAlreadyExists))
 	}
 
 	var n graph.Node
@@ -107,7 +107,32 @@ func (wf *Workflow) AddNode(node *Node) error {
 	wf.node2Activity[node.ID] = node.ActivityName
 	wf.Nodes[node.ActivityName] = node
 
-	return nil
+	return wf
+}
+
+func (wf *Workflow) Then(node *Node) *Workflow {
+	lastNode := wf.getLastNode()
+	wf.AddNode(node)
+
+	if len(wf.Nodes) == 0 {
+		return wf
+	}
+
+	// Link the last added node to the new node
+	wf.Link(lastNode.ActivityName, node.ActivityName)
+	return wf
+}
+
+func (wf *Workflow) getLastNode() *Node {
+	var lastNode *Node
+	maxID := int64(-1)
+	for _, node := range wf.Nodes {
+		if node.ID > maxID {
+			maxID = node.ID
+			lastNode = node
+		}
+	}
+	return lastNode
 }
 
 func (wf *Workflow) AddNodes(nodes ...*Node) *Workflow {
@@ -154,9 +179,7 @@ func (wf *Workflow) Import(workflow []byte) error {
 	}
 
 	for _, node := range tmp.Nodes {
-		if err := wf.AddNode(node); err != nil {
-			return err
-		}
+		wf.AddNode(node)
 	}
 
 	for _, edge := range tmp.Edges {
@@ -346,9 +369,13 @@ func (n *Node) IsTrigger() bool {
 	return n.Type == Trigger
 }
 
-func (n *Node) RetryPolicyOrDefault() *RetryPolicy {
+func (n *Node) RetryPolicyOrDefault(d *RetryPolicy) *RetryPolicy {
 	if n.RetryPolicy == nil {
-		return DefaultRetryPolicy()
+		if d == nil {
+			return DefaultRetryPolicy()
+		}
+
+		return d
 	}
 
 	return n.RetryPolicy
@@ -453,11 +480,12 @@ func RouteTo(nodeKey string) error {
 }
 
 type Orchestrator struct {
-	workflow  *Workflow
-	persister persistence.Persister
-	registry  map[string]Activity
-	reducer   map[string]Reducer
-	logger    *slog.Logger
+	workflow           *Workflow
+	persister          persistence.Persister
+	registry           map[string]Activity
+	reducer            map[string]Reducer
+	logger             *slog.Logger
+	defaultRetryPolicy *RetryPolicy
 
 	parallel            map[int64]struct{}
 	completedNodeOutput map[int64][]byte
@@ -473,12 +501,19 @@ func NewOrchestrator(options ...OrchestratorOption) *Orchestrator {
 		parallel:            make(map[int64]struct{}),
 		completedNodeOutput: make(map[int64][]byte),
 		completedNodeErrors: make(map[int64]*DynamicRoute),
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	for _, option := range options {
 		option(o)
 	}
 
+	return o
+}
+
+func NewOrchestratorWithWorkflow(w *Workflow, options ...OrchestratorOption) *Orchestrator {
+	o := NewOrchestrator(options...)
+	o.LoadWorkflow(w)
 	return o
 }
 
@@ -493,6 +528,12 @@ func WithPersistence(persister persistence.Persister) OrchestratorOption {
 func WithLogger(logger *slog.Logger) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.logger = logger
+	}
+}
+
+func WithDefaultRetryPolicy(policy *RetryPolicy) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.defaultRetryPolicy = policy
 	}
 }
 
@@ -831,7 +872,7 @@ const retryAttemptsKey ctxKeyType = "retry_attempts_"
 
 func (n *Node) hasRetriesLeft(ctx context.Context) bool {
 	attempts, _ := ctx.Value(retryAttemptsKey + ctxKeyType(n.ActivityName)).(int)
-	return attempts < n.RetryPolicyOrDefault().MaxRetries
+	return attempts < n.RetryPolicyOrDefault(nil).MaxRetries
 }
 
 func (n *Node) withRetryAttempts(ctx context.Context, attempts int) context.Context {
@@ -983,7 +1024,7 @@ func (o *Orchestrator) executeNode(ctx context.Context, node *Node, input []byte
 	var dynamicRoute *DynamicRoute
 
 	var attempt int
-	maxAttempts := node.RetryPolicyOrDefault().MaxRetries
+	maxAttempts := node.RetryPolicyOrDefault(o.defaultRetryPolicy).MaxRetries
 	if maxAttempts == 0 {
 		maxAttempts = math.MaxInt
 	}
@@ -1018,7 +1059,7 @@ func (o *Orchestrator) executeNode(ctx context.Context, node *Node, input []byte
 			break
 		}
 
-		delay := node.RetryPolicyOrDefault().backoff(attempt)
+		delay := node.RetryPolicyOrDefault(o.defaultRetryPolicy).backoff(attempt)
 		Logger(ctx).Error("failed to log workflow step", "activity", node.ActivityName, "attempt", attempt, "delay", delay, "error", activityError)
 		<-time.After(delay)
 	}
