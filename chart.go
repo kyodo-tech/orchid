@@ -126,16 +126,26 @@ func (wf *Workflow) ExportMermaid(indent string, optionalChildWorkflows map[stri
 	mermaidData = append(mermaidData, []byte("flowchart TD\n")...)
 
 	visited := make(map[string]bool)
-	mermaidData = append(mermaidData, wf.exportMermaidRecursive(indent+"    ", visited, optionalChildWorkflows, "")...)
+	classAssignments := make([]string, 0)
+	mermaidData = append(mermaidData, wf.exportMermaidRecursive(indent+"    ", visited, optionalChildWorkflows, "", &classAssignments)...)
 
-	// Add class definitions at the end to avoid duplicates
+	mermaidData = append(mermaidData, []byte("\n")...)
+
+	// Append collected class assignments after subgraphs
+	for _, classAssign := range classAssignments {
+		mermaidData = append(mermaidData, []byte(classAssign)...)
+	}
+
+	mermaidData = append(mermaidData, []byte("\n")...)
+
+	// Add class definitions at the end
 	mermaidData = append(mermaidData, []byte("classDef startNode fill:#9f6,stroke:#333,stroke-width:4px;\n")...)
 	mermaidData = append(mermaidData, []byte("classDef parallelNode fill:#6cf,stroke:#333,stroke-width:2px;\n")...)
 
 	return mermaidData
 }
 
-func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]bool, optionalChildWorkflows map[string]*Workflow, prefix string) []byte {
+func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]bool, optionalChildWorkflows map[string]*Workflow, prefix string, classAssignments *[]string) []byte {
 	var mermaidData []byte
 
 	if visited[wf.Name] {
@@ -155,8 +165,8 @@ func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]boo
 			mermaidData = append(mermaidData, []byte(fmt.Sprintf("click %s \"%s\" _blank\n", nodeName, *node.EditLink))...)
 		}
 
-		// Apply class to start nodes
-		mermaidData = append(mermaidData, []byte(fmt.Sprintf("class %s startNode\n", nodeName))...)
+		// Collect class assignment
+		*classAssignments = append(*classAssignments, fmt.Sprintf("class %s startNode\n", nodeName))
 	}
 
 	// Render remaining nodes (excluding starting nodes)
@@ -173,34 +183,25 @@ func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]boo
 			mermaidData = append(mermaidData, []byte(fmt.Sprintf("click %s \"%s\" _blank\n", nodeName, *node.EditLink))...)
 		}
 
-		// Apply class to parallel nodes or any other types as needed
+		// Collect class assignment if node is a parallel node
 		if wf.isParallelNode(node) {
-			mermaidData = append(mermaidData, []byte(fmt.Sprintf("class %s parallelNode\n", nodeName))...)
+			*classAssignments = append(*classAssignments, fmt.Sprintf("class %s parallelNode\n", nodeName))
 		}
 	}
 
-	// Define edges, including connections to/from child workflows as before
+	mermaidData = append(mermaidData, []byte("\n")...)
+
+	// Edge definitions
 	for _, edge := range wf.Edges {
 		fromNode := prefix + edge.From
 		toNode := prefix + edge.To
 
-		if childWf, exists := optionalChildWorkflows[edge.From]; exists {
-			// Handle entry points for a child workflow
-			childPrefix := edge.From + "_"
-			exitNodes := childWf.exitNodes()
-
-			for _, exitNode := range exitNodes {
-				mermaidData = append(mermaidData, []byte(indent)...)
-				mermaidData = append(mermaidData, []byte(childPrefix+exitNode.ActivityName)...)
-				mermaidData = append(mermaidData, []byte(" --> ")...)
-				mermaidData = append(mermaidData, []byte(toNode)...)
-				mermaidData = append(mermaidData, []byte("\n")...)
-			}
-		} else if childWf, exists := optionalChildWorkflows[edge.To]; exists {
-			// Handle exit points for a child workflow
+		if childWf, exists := optionalChildWorkflows[edge.To]; exists {
+			// 'To' node is a child workflow
 			childPrefix := edge.To + "_"
 			entryNodes := childWf.startingNodes()
 
+			// Connect parent node to child workflow's entry nodes
 			for _, entryNode := range entryNodes {
 				mermaidData = append(mermaidData, []byte(indent)...)
 				mermaidData = append(mermaidData, []byte(fromNode)...)
@@ -211,10 +212,23 @@ func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]boo
 
 			// Render the child workflow subgraph recursively
 			mermaidData = append(mermaidData, []byte(indent+"subgraph "+edge.To+"\n")...)
-			mermaidData = append(mermaidData, childWf.exportMermaidRecursive(indent+"    ", visited, optionalChildWorkflows, childPrefix)...)
+			mermaidData = append(mermaidData, childWf.exportMermaidRecursive(indent+"    ", visited, optionalChildWorkflows, childPrefix, classAssignments)...)
 			mermaidData = append(mermaidData, []byte(indent+"end\n")...)
+		} else if childWf, exists := optionalChildWorkflows[edge.From]; exists {
+			// 'From' node is a child workflow
+			childPrefix := edge.From + "_"
+			exitNodes := childWf.exitNodes()
+
+			// Connect child workflow's exit nodes to parent node
+			for _, exitNode := range exitNodes {
+				mermaidData = append(mermaidData, []byte(indent)...)
+				mermaidData = append(mermaidData, []byte(childPrefix+exitNode.ActivityName)...)
+				mermaidData = append(mermaidData, []byte(" --> ")...)
+				mermaidData = append(mermaidData, []byte(toNode)...)
+				mermaidData = append(mermaidData, []byte("\n")...)
+			}
 		} else {
-			// Standard edge definition
+			// Regular edge
 			mermaidData = append(mermaidData, []byte(indent)...)
 			mermaidData = append(mermaidData, []byte(fromNode)...)
 			mermaidData = append(mermaidData, []byte(" --> ")...)

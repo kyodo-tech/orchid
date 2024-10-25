@@ -15,28 +15,31 @@ Workflow completed with output: Hello from co1Hello from co2 (2)
 Uncomment the demo exports section to generate the diagram.
 
 ```mermaid
-    flowchart TD
-      Start[Start]
+flowchart TD
+    Start[Start]
+    WaitAndMerge[WaitAndMerge]
+    StartCw1[StartCw1]
+    StartCw2[StartCw2]
+    Start --> StartCw1_PrintActivity
+    subgraph StartCw1
+        StartCw1_PrintActivity[PrintActivity]
+    end
+    Start --> StartCw2_ChildStep1
+    subgraph StartCw2
+        StartCw2_ChildStep1[ChildStep1]
+        StartCw2_ChildStep2[ChildStep2]
+        StartCw2_ChildStep1 --> StartCw2_ChildStep2
+    end
+    StartCw1_PrintActivity --> WaitAndMerge
+    StartCw2_ChildStep2 --> WaitAndMerge
+
 class Start startNode
-      StartCw1[StartCw1]
 class StartCw1 parallelNode
-      StartCw2[StartCw2]
 class StartCw2 parallelNode
-      WaitAndMerge[WaitAndMerge]
-      Start --&gt; StartCw1_PrintActivity
-      subgraph StartCw1
-          StartCw1_PrintActivity[PrintActivity]
 class StartCw1_PrintActivity startNode
-      end
-      Start --&gt; StartCw2_ChildStep1
-      subgraph StartCw2
-          StartCw2_ChildStep1[ChildStep1]
 class StartCw2_ChildStep1 startNode
-          StartCw2_ChildStep2[ChildStep2]
-          StartCw2_ChildStep1 --&gt; StartCw2_ChildStep2
-      end
-      StartCw1_PrintActivity --&gt; WaitAndMerge
-      StartCw2_ChildStep2 --&gt; WaitAndMerge
+
 classDef startNode fill:#9f6,stroke:#333,stroke-width:4px;
 classDef parallelNode fill:#6cf,stroke:#333,stroke-width:2px;
+
 ```

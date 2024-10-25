@@ -162,7 +162,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		mermaidHTML, err := wf.ExportMermaidHTML("  ", map[string]*orchid.Workflow{
+		mermaidHTML, err := wf.ExportMermaidHTML("", map[string]*orchid.Workflow{
 			"StartCw1": cw1,
 			"StartCw2": cw2,
 		})
