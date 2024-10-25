@@ -191,82 +191,140 @@ func (wf *Workflow) Import(workflow []byte) error {
 	return nil
 }
 
-// markParallelNodes traverses the graph and marks all nodes that are parallel behind a fan-out and before a fan-in.
+// markParallelNodes identifies nodes that are part of parallel paths between a fan-out and a fan-in node.
 func markParallelNodes(g *simple.DirectedGraph) map[int64]struct{} {
 	parallel := make(map[int64]struct{})
-	nodes := g.Nodes()
+	visited := make(map[int64]struct{})
+	recursionStack := make([]int64, 0)
 
-	for nodes.Next() {
-		node := nodes.Node()
-
-		// Check if the node is a fan-out node.
-		successors := g.From(node.ID())
-		if successors.Len() > 1 {
-			// For each successor, perform a traversal.
-			for successors.Next() {
-				successor := successors.Node()
-				traverseAndMark(g, successor, parallel, make(map[int64]bool))
-			}
-		}
+	// Start DFS traversal from root nodes (nodes with no incoming edges)
+	roots := findRootNodes(g)
+	for _, root := range roots {
+		dfsMarkParallelNodes(g, root, visited, recursionStack, parallel)
 	}
-
 	return parallel
 }
 
-// traverseAndMark performs a traversal starting from the given node and marks all nodes as parallel,
-// avoiding circular paths.
-func traverseAndMark(g *simple.DirectedGraph, startNode graph.Node, parallel map[int64]struct{}, inCycle map[int64]bool) {
-	visited := make(map[int64]struct{})
-	stack := []graph.Node{startNode}
-	path := []int64{} // Track the path for cycle detection
+// dfsMarkParallelNodes performs a DFS traversal to identify and mark parallel nodes.
+func dfsMarkParallelNodes(g *simple.DirectedGraph, node graph.Node, visited map[int64]struct{}, recursionStack []int64, parallel map[int64]struct{}) {
+	nodeID := node.ID()
 
-	for len(stack) > 0 {
-		// Pop the last node from the stack.
-		node := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+	// If already visited, return.
+	if _, ok := visited[nodeID]; ok {
+		return
+	}
+	visited[nodeID] = struct{}{}
+	recursionStack = append(recursionStack, nodeID) // Add to recursion stack
 
-		// If the node has already been visited in the current path, skip it.
-		if _, ok := visited[node.ID()]; ok {
-			continue
+	// Identify fan-out nodes with outgoing edges to non-ancestors.
+	successors := g.From(nodeID)
+	nonAncestorSuccessors := []graph.Node{}
+	for successors.Next() {
+		successor := successors.Node()
+		successorID := successor.ID()
+
+		if !contains(recursionStack, successorID) {
+			nonAncestorSuccessors = append(nonAncestorSuccessors, successor)
 		}
-		visited[node.ID()] = struct{}{}
-		path = append(path, node.ID())
+	}
 
-		// Check if the node is part of a cycle in the current path.
-		if inCycle[node.ID()] {
-			continue
+	if len(nonAncestorSuccessors) > 1 {
+		// Node is a fan-out node. Start separate traversals for each non-ancestor successor.
+		for _, successor := range nonAncestorSuccessors {
+			traversePath(g, successor, map[int64]struct{}{}, parallel, nodeID, make(map[int64]bool), recursionStack)
 		}
-
-		// Check if the node is a fan-in (excluding the start node).
-		predecessors := g.To(node.ID())
-		if predecessors.Len() > 1 && node.ID() != startNode.ID() {
-			// If it's a fan-in, stop marking and stop traversal.
-			continue
+	} else {
+		// Continue DFS traversal.
+		for _, successor := range nonAncestorSuccessors {
+			dfsMarkParallelNodes(g, successor, visited, recursionStack, parallel)
 		}
-
-		// Mark the node as parallel.
-		parallel[node.ID()] = struct{}{}
-
-		// Continue traversal to successors.
-		successors := g.From(node.ID())
+		// Also need to consider back edges for standard traversal.
+		successors.Reset()
 		for successors.Next() {
 			successor := successors.Node()
-			if _, ok := visited[successor.ID()]; !ok {
-				if isCyclic(successor.ID(), path) {
-					// Mark nodes in the cycle to avoid re-marking them.
-					inCycle[successor.ID()] = true
-				} else {
-					stack = append(stack, successor)
-				}
+			successorID := successor.ID()
+			if contains(recursionStack, successorID) {
+				// Back edge to ancestor; continue traversal without marking parallel.
+				dfsMarkParallelNodes(g, successor, visited, recursionStack, parallel)
 			}
 		}
 	}
+	recursionStack = recursionStack[:len(recursionStack)-1] // Remove from recursion stack
 }
 
-// isCyclic checks whether the given node is part of a cycle in the current path.
-func isCyclic(nodeID int64, path []int64) bool {
-	for _, id := range path {
-		if id == nodeID {
+// traversePath performs traversal from a fan-out node's successor to identify parallel nodes.
+func traversePath(g *simple.DirectedGraph, node graph.Node, visited map[int64]struct{}, parallel map[int64]struct{}, startNodeID int64, recursionStack map[int64]bool, ancestors []int64) {
+	nodeID := node.ID()
+
+	// Stop traversal if we loop back to the starting node or an ancestor.
+	if nodeID == startNodeID || contains(ancestors, nodeID) {
+		return
+	}
+
+	// Detect cycles.
+	if recursionStack[nodeID] {
+		return
+	}
+	recursionStack[nodeID] = true
+	defer func() { recursionStack[nodeID] = false }()
+
+	// If the node has already been visited in this path, skip it.
+	if _, ok := visited[nodeID]; ok {
+		return
+	}
+	visited[nodeID] = struct{}{}
+
+	// Check if the node is a fan-in node (has multiple predecessors from different paths).
+	if isFanInNode(g, nodeID, ancestors) {
+		// Node is a fan-in point; stop traversal.
+		return
+	}
+
+	// Mark the node as parallel.
+	parallel[nodeID] = struct{}{}
+
+	// Continue traversal to successors.
+	successors := g.From(nodeID)
+	for successors.Next() {
+		successor := successors.Node()
+		traversePath(g, successor, visited, parallel, startNodeID, recursionStack, ancestors)
+	}
+}
+
+// isFanInNode checks if a node has multiple predecessors not in the current path (ancestors).
+func isFanInNode(g *simple.DirectedGraph, nodeID int64, ancestors []int64) bool {
+	predecessors := g.To(nodeID)
+	count := 0
+	for predecessors.Next() {
+		predID := predecessors.Node().ID()
+		if !contains(ancestors, predID) {
+			count++
+			if count > 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// findRootNodes finds nodes with no incoming edges.
+func findRootNodes(g *simple.DirectedGraph) []graph.Node {
+	var roots []graph.Node
+	nodes := g.Nodes()
+	for nodes.Next() {
+		node := nodes.Node()
+		predecessors := g.To(node.ID())
+		if predecessors.Len() == 0 {
+			roots = append(roots, node)
+		}
+	}
+	return roots
+}
+
+// Helper function to check if a slice contains an element.
+func contains(slice []int64, elem int64) bool {
+	for _, item := range slice {
+		if item == elem {
 			return true
 		}
 	}
@@ -323,20 +381,7 @@ type Node struct {
 	Config       map[string]interface{} `json:"config,omitempty"`
 	Type         NodeType               `json:"type,omitempty"`
 	RetryPolicy  *RetryPolicy           `json:"retry,omitempty"`
-}
-
-func NewNode(activity string, options ...NodeOption) *Node {
-	n := &Node{
-		ID:           -1,
-		ActivityName: activity,
-		Type:         Action,
-	}
-
-	for _, option := range options {
-		option(n)
-	}
-
-	return n
+	EditLink     *string                `json:"link,omitempty"`
 }
 
 type NodeOption func(*Node)
@@ -363,6 +408,26 @@ func WithNodeRetryPolicy(policy *RetryPolicy) NodeOption {
 	return func(n *Node) {
 		n.RetryPolicy = policy
 	}
+}
+
+func WithNodeEditLink(link string) NodeOption {
+	return func(n *Node) {
+		n.EditLink = &link
+	}
+}
+
+func NewNode(activity string, options ...NodeOption) *Node {
+	n := &Node{
+		ID:           -1,
+		ActivityName: activity,
+		Type:         Action,
+	}
+
+	for _, option := range options {
+		option(n)
+	}
+
+	return n
 }
 
 func (n *Node) IsTrigger() bool {
