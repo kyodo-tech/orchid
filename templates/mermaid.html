@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="generator" content="https://github.com/kyodo-tech/orchid@v0.3.0">
+    <title>{{ .Title }} Orchid Workflow Flowchart</title>
+    <!-- Load Mermaid -->
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    </script>
+    <style>
+        /* Fullscreen, responsive styling */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        .mermaid {
+            width: 90vw;
+            height: 90vh;
+            max-width: 1000px;
+            max-height: 100%;
+            overflow: auto; /* Enables scrolling for large diagrams */
+        }
+    </style>
+</head>
+<body>
+
+<div class="mermaid">
+    {{ .Flowchart }}
+</div>
+
+</body>
+</html>

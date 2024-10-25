@@ -105,9 +105,12 @@ func main() {
 	registerOrchestrator("co1", co1) // Register co1
 
 	co2 := orchid.NewOrchestrator(orchid.WithPersistence(persister))
-	co2.RegisterActivity("PrintActivity", PrintAndForward("Hello from co2"))
+	co2.RegisterActivity("ChildStep1", PrintAndForward("Hello from co2 (1)"))
+	co2.RegisterActivity("ChildStep2", PrintAndForward("Hello from co2 (2)"))
 	cw2 := orchid.NewWorkflow("child2")
-	cw2.AddNode(orchid.NewNode("PrintActivity"))
+	cw2.AddNode(orchid.NewNode("ChildStep1"))
+	cw2.AddNode(orchid.NewNode("ChildStep2"))
+	cw2.Link("ChildStep1", "ChildStep2")
 	co2.LoadWorkflow(cw2)
 	registerOrchestrator("co2", co2) // Register co2
 
@@ -124,7 +127,7 @@ func main() {
 	o.RegisterReducer("WaitAndMerge", mergeOutputs)
 
 	// Define parent workflow
-	wf := orchid.NewWorkflow("parent")
+	wf := orchid.NewWorkflow("parent, main workflow")
 	wf.AddNode(orchid.NewNode("Start"))
 	wf.AddNode(orchid.NewNode("StartCw1", orchid.WithNodeConfig(map[string]interface{}{
 		"child-orchestrator-name": "co1",
@@ -150,22 +153,26 @@ func main() {
 		fmt.Println("Workflow completed with output:", string(output))
 	}
 
-	// showcase what is persisted:
+	// demo exports
 
-	// dwf, _ := wf.Export()
-	// if err := os.WriteFile("wf.json", dwf, 0644); err != nil {
-	// 	fmt.Println(err)
-	// 	os.Exit(1)
-	// }
+	/*
+		wfout, _ := wf.Export()
+		if err := os.WriteFile("wf.json", wfout, 0644); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
 
-	// dcw2, _ := cw2.Export()
-	// if err := os.WriteFile("cw2.json", dcw2, 0644); err != nil {
-	// 	fmt.Println(err)
-	// 	os.Exit(1)
-	// }
+		mermaidHTML, err := wf.ExportMermaidHTML("  ", map[string]*orchid.Workflow{
+			"StartCw1": cw1,
+			"StartCw2": cw2,
+		})
+		if err != nil {
+			fmt.Println(err)
+		}
 
-	// wf.ExportDotToFile("wf.dot", map[string]*orchid.Workflow{
-	// 	"StartCw1": cw1,
-	// 	"StartCw2": cw2,
-	// })
+		if err := os.WriteFile("mermaid.html", mermaidHTML, 0644); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	*/
 }

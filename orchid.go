@@ -249,7 +249,9 @@ func dfsMarkParallelNodes(g *simple.DirectedGraph, node graph.Node, visited map[
 			}
 		}
 	}
-	recursionStack = recursionStack[:len(recursionStack)-1] // Remove from recursion stack
+
+	// Remove from recursion stack
+	// recursionStack = recursionStack[:len(recursionStack)-1]
 }
 
 // traversePath performs traversal from a fan-out node's successor to identify parallel nodes.
@@ -331,7 +333,7 @@ func contains(slice []int64, elem int64) bool {
 	return false
 }
 
-func (wf *Workflow) startingNodes() []graph.Node {
+func (wf *Workflow) startingGraphNodes() []graph.Node {
 	var startNodes []graph.Node
 	for nodes := wf.directedGraph.Nodes(); nodes.Next(); {
 		node := nodes.Node()
@@ -344,10 +346,31 @@ func (wf *Workflow) startingNodes() []graph.Node {
 	return startNodes
 }
 
+func (wf *Workflow) startingNodes() []*Node {
+	var startNodes []*Node
+	for _, node := range wf.Nodes {
+		if wf.isStartNode(node) {
+			startNodes = append(startNodes, node)
+		}
+	}
+	return startNodes
+}
+
+func (wf *Workflow) exitNodes() []*Node {
+	var exitNodes []*Node
+	for _, node := range wf.Nodes {
+		// If the node has no outgoing edges, it's an exit node
+		if wf.directedGraph.From(node.ID).Len() == 0 {
+			exitNodes = append(exitNodes, node)
+		}
+	}
+	return exitNodes
+}
+
 func (wf *Workflow) start() (*Node, error) {
 	var nodes []*Node
 
-	startingNodes := wf.startingNodes()
+	startingNodes := wf.startingGraphNodes()
 
 	for _, node := range startingNodes {
 		nodeActivity, _ := wf.getActivityNameByNodeID(node.ID())
