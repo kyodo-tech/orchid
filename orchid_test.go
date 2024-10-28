@@ -27,7 +27,6 @@ import (
 )
 
 func TestOrchestrator_WorkflowSimple(t *testing.T) {
-	// Create an orchestrator with the in-memory persister
 	o := orchid.NewOrchestrator()
 	ctx := context.Background()
 	type testkey string
@@ -71,8 +70,53 @@ func TestOrchestrator_WorkflowSimple(t *testing.T) {
 	assert.Equal(t, "ABC", string(out))
 }
 
-func TestOrchestrator_WorkflowsWithRouting(t *testing.T) {
+func TestOrchestrator_UniqueWorkflowIDs(t *testing.T) {
 	// Create an orchestrator with the in-memory persister
+	persister, err := persistence.NewSQLitePersister(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create SQLite persister: %v", err)
+	}
+	defer persister.DB.Close()
+
+	// Create an orchestrator with the in-memory persister
+	o := orchid.NewOrchestrator(
+		orchid.WithPersistence(persister),
+	)
+
+	// Register activities
+	o.RegisterActivity("A", func(ctx context.Context, input []byte) ([]byte, error) {
+		return append(input, 'A'), nil
+	})
+
+	wf := orchid.NewWorkflow("test_workflow")
+	wf.AddNode(orchid.NewNode("A"))
+
+	o.LoadWorkflow(wf)
+
+	// Start the workflow
+	workflowID := uuid.New().String()
+
+	ctx := context.Background()
+	ctx = orchid.WithWorkflowID(ctx, workflowID)
+
+	out, err := o.Start(ctx, []byte{})
+	assert.NoError(t, err)
+	assert.Equal(t, "A", string(out))
+
+	// Start the workflow again with the same ID
+	_, err = o.Start(ctx, []byte{})
+	assert.Error(t, err, persistence.ErrWorkflowIDExists.Error())
+
+	// Start the workflow again with a different ID
+	workflowID2 := uuid.New().String()
+	ctx = orchid.WithWorkflowID(ctx, workflowID2)
+
+	out, err = o.Start(ctx, []byte{})
+	assert.NoError(t, err)
+	assert.Equal(t, "A", string(out))
+}
+
+func TestOrchestrator_WorkflowsWithRouting(t *testing.T) {
 	o := orchid.NewOrchestrator()
 
 	// Register activities

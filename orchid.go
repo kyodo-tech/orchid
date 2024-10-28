@@ -548,6 +548,8 @@ type Edge struct {
 
 type Activity func(ctx context.Context, input []byte) (output []byte, err error)
 
+type Entrypoint func(ctx context.Context) ([]byte, error)
+
 type Middleware func(Activity) Activity
 
 type Reducer func([][]byte) []byte
@@ -840,14 +842,14 @@ func ParentWorkflowID(ctx context.Context) string {
 	return v
 }
 
-type isRestoringMainWorkflow struct{}
+type mainWorkflowRestoreKey struct{}
 
-func WithRestoringMainWorkflow(ctx context.Context) context.Context {
-	return context.WithValue(ctx, isRestoringMainWorkflow{}, true)
+func SignalWorkflowRestore(ctx context.Context) context.Context {
+	return context.WithValue(ctx, mainWorkflowRestoreKey{}, true)
 }
 
-func IsRestoringMainWorkflow(ctx context.Context) bool {
-	v, _ := ctx.Value(isRestoringMainWorkflow{}).(bool)
+func IsWorkflowRestore(ctx context.Context) bool {
+	v, _ := ctx.Value(mainWorkflowRestoreKey{}).(bool)
 	return v
 }
 
@@ -892,6 +894,43 @@ func (o *Orchestrator) RunTriggers(ctx context.Context, input []byte) ([]byte, e
 	return nil, nil
 }
 
+var ErrRestorable = fmt.Errorf("workflow is restorable")
+
+func (o *Orchestrator) getRestorableChild(ctx context.Context, childID string) (Entrypoint, error) {
+	// Workflow already exists and is a child workflow, attempt to
+	// restore it for idempotent execution.
+	restorable, err := o.RestorableWorkflows(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// child workflows are not auto restored but are implicitly restored from
+	// parent workflows if the same workflow id is found.
+	if workflows, ok := restorable[o.workflow.Name]; ok {
+		if restorable, ok := workflows[childID]; ok {
+			return restorable.Entrypoint, ErrRestorable
+		}
+	}
+	return nil, fmt.Errorf("workflow %s cannot be restored", childID)
+}
+
+func (o *Orchestrator) isUniqueOrRestorable(ctx context.Context, workflowID string) (Entrypoint, error) {
+	if o.persister == nil {
+		return nil, nil
+	}
+
+	err := o.persister.IsUniqueWorkflowID(ctx, workflowID)
+	if err != nil && !IsWorkflowRestore(ctx) {
+		if errors.Is(err, persistence.ErrWorkflowIDExists) {
+			return o.getRestorableChild(ctx, workflowID)
+		}
+
+		return nil, err
+	}
+
+	return nil, nil
+}
+
 func (o *Orchestrator) Start(ctx context.Context, data []byte) (output []byte, err error) {
 	if o.workflow == nil {
 		panic("no workflow loaded")
@@ -902,25 +941,13 @@ func (o *Orchestrator) Start(ctx context.Context, data []byte) (output []byte, e
 		return nil, fmt.Errorf("execution ID not set")
 	}
 
-	if o.persister != nil {
-		err := o.persister.IsUniqueWorkflowID(ctx, id)
-		if err != nil && !IsRestoringMainWorkflow(ctx) {
-			if errors.Is(err, persistence.ErrWorkflowIDExists) {
-				// Workflow already exists, attempt to restore
-				restorable, err := o.RestorableWorkflows(ctx)
-				if err != nil {
-					return nil, err
-				}
-				if workflows, ok := restorable[o.workflow.Name]; ok {
-					if restorable, ok := workflows[id]; ok {
-						// Restore the workflow
-						return restorable.Entrypoint(ctx)
-					}
-				}
-				return nil, fmt.Errorf("workflow %s cannot be restored", id)
-			}
-			return nil, err
+	restorable, err := o.isUniqueOrRestorable(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrRestorable) {
+			// Restore the workflow
+			return restorable(ctx)
 		}
+		return nil, err
 	}
 
 	startNode, err := o.workflow.startNode()
@@ -942,30 +969,18 @@ func (o *Orchestrator) StartAsync(ctx context.Context, data []byte) (output []by
 		return nil, fmt.Errorf("execution ID not set")
 	}
 
-	if o.persister != nil {
-		err := o.persister.IsUniqueWorkflowID(ctx, id)
-		if err != nil && !IsRestoringMainWorkflow(ctx) {
-			if errors.Is(err, persistence.ErrWorkflowIDExists) {
-				// Workflow already exists, attempt to restore
-				restorable, err := o.RestorableWorkflows(ctx)
-				if err != nil {
-					return nil, err
+	restorable, err := o.isUniqueOrRestorable(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrRestorable) {
+			// Restore the workflow
+			go func() {
+				if _, err := restorable(ctx); err != nil {
+					Logger(ctx).Error("failed to restore workflow", "workflow", id, "error", err)
 				}
-				if workflows, ok := restorable[o.workflow.Name]; ok {
-					if restorable, ok := workflows[id]; ok {
-						// Restore the workflow
-						go func() {
-							if _, err := restorable.Entrypoint(ctx); err != nil {
-								Logger(ctx).Error("failed to restore workflow", "workflow", id, "error", err)
-							}
-						}()
-						return nil, nil
-					}
-				}
-				return nil, fmt.Errorf("workflow %s cannot be restored", id)
-			}
-			return nil, err
+			}()
+			return nil, nil
 		}
+		return nil, err
 	}
 
 	startNode, err := o.workflow.startNode()
@@ -1368,7 +1383,7 @@ func (o *Orchestrator) tryLogWorkflowStep(ctx context.Context, entry *persistenc
 
 type RestorableWorkflowState struct {
 	Status     *persistence.WorkflowStatus
-	Entrypoint func(ctx context.Context) ([]byte, error)
+	Entrypoint Entrypoint
 }
 
 // RestorableWorkflows returns a map of workflowName to a map of workflowID to
@@ -1478,7 +1493,7 @@ func (o *Orchestrator) RestorableWorkflows(ctx context.Context) (RestorableWorkf
 				Entrypoint: func(ctx context.Context) ([]byte, error) {
 					// if the earliest node is nil, we're restoring this workflow from
 					// the beginning and have to use the initial node input.
-					ctx = WithRestoringMainWorkflow(ctx)
+					ctx = SignalWorkflowRestore(ctx)
 					return o.Start(ctx, initialNodeInput)
 				},
 			}
