@@ -23,9 +23,9 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/google/uuid"
 	orchid "github.com/kyodo-tech/orchid"
 	"github.com/kyodo-tech/orchid/persistence"
-	"github.com/google/uuid"
 )
 
 const workflowName = "webhook.json"
@@ -177,7 +177,7 @@ func main() {
 	}
 
 	o.LoadWorkflow(wf)
-	if err := o.RestoreWorkflowsAsync(context.Background()); err != nil {
+	if err := o.RestoreWorkflowsAsync(context.Background(), false); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}

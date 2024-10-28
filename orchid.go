@@ -87,6 +87,16 @@ func (wf *Workflow) getActivityNameByNodeID(id int64) (string, bool) {
 	return activity, exists
 }
 
+func (wf *Workflow) AddNewNode(activity string, options ...NodeOption) *Workflow {
+	node := NewNode(activity, options...)
+	return wf.AddNode(node)
+}
+
+func (wf *Workflow) ThenNewNode(activity string, options ...NodeOption) *Workflow {
+	node := NewNode(activity, options...)
+	return wf.Then(node)
+}
+
 // AddNode adds a new task to the workflow.
 func (wf *Workflow) AddNode(node *Node) *Workflow {
 	if _, exists := wf.Nodes[node.ActivityName]; exists {
@@ -367,7 +377,7 @@ func (wf *Workflow) exitNodes() []*Node {
 	return exitNodes
 }
 
-func (wf *Workflow) start() (*Node, error) {
+func (wf *Workflow) startNode() (*Node, error) {
 	var nodes []*Node
 
 	startingNodes := wf.startingGraphNodes()
@@ -580,6 +590,8 @@ type Orchestrator struct {
 	completedNodeErrors map[int64]*DynamicRoute
 
 	middlewares []Middleware
+
+	failWorkflowOnActivityPanic bool
 }
 
 func NewOrchestrator(options ...OrchestratorOption) *Orchestrator {
@@ -596,12 +608,6 @@ func NewOrchestrator(options ...OrchestratorOption) *Orchestrator {
 		option(o)
 	}
 
-	return o
-}
-
-func NewOrchestratorWithWorkflow(w *Workflow, options ...OrchestratorOption) *Orchestrator {
-	o := NewOrchestrator(options...)
-	o.LoadWorkflow(w)
 	return o
 }
 
@@ -622,6 +628,12 @@ func WithLogger(logger *slog.Logger) OrchestratorOption {
 func WithDefaultRetryPolicy(policy *RetryPolicy) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.defaultRetryPolicy = policy
+	}
+}
+
+func WithFailWorkflowOnActivityPanic(fail bool) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.failWorkflowOnActivityPanic = fail
 	}
 }
 
@@ -672,6 +684,23 @@ func (o *Orchestrator) GetNode(graphNode graph.Node) (*Node, bool) {
 	return node, ok
 }
 
+type OrchestratorRegistry map[string]*Orchestrator
+
+func NewOrchestratorRegistry() OrchestratorRegistry {
+	return make(map[string]*Orchestrator)
+}
+
+func (r OrchestratorRegistry) Set(name string, o *Orchestrator) {
+	r[name] = o
+}
+
+func (r OrchestratorRegistry) Get(name string) (*Orchestrator, error) {
+	if o, ok := r[name]; ok {
+		return o, nil
+	}
+	return nil, fmt.Errorf("orchestrator %s not found", name)
+}
+
 type configKey struct{}
 
 func Config(ctx context.Context, key string) (interface{}, bool) {
@@ -701,6 +730,16 @@ func ConfigString(ctx context.Context, key string) (string, bool) {
 	}
 
 	return "", false
+}
+
+func ConfigInt(ctx context.Context, key string) (int, bool) {
+	if v, ok := Config(ctx, key); ok {
+		if val, ok := v.(int); ok {
+			return val, ok
+		}
+	}
+
+	return 0, false
 }
 
 type startKey struct{}
@@ -781,8 +820,34 @@ func WithWorkflowID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, workflowIDKey{}, id)
 }
 
+func WithNewWorkflowID(ctx context.Context) context.Context {
+	return context.WithValue(ctx, workflowIDKey{}, uuid.New().String())
+}
+
 func WorkflowID(ctx context.Context) string {
 	v, _ := ctx.Value(workflowIDKey{}).(string)
+	return v
+}
+
+type parentWorkflowIDKey struct{}
+
+func WithParentWorkflowID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, parentWorkflowIDKey{}, id)
+}
+
+func ParentWorkflowID(ctx context.Context) string {
+	v, _ := ctx.Value(parentWorkflowIDKey{}).(string)
+	return v
+}
+
+type isRestoringMainWorkflow struct{}
+
+func WithRestoringMainWorkflow(ctx context.Context) context.Context {
+	return context.WithValue(ctx, isRestoringMainWorkflow{}, true)
+}
+
+func IsRestoringMainWorkflow(ctx context.Context) bool {
+	v, _ := ctx.Value(isRestoringMainWorkflow{}).(bool)
 	return v
 }
 
@@ -827,48 +892,89 @@ func (o *Orchestrator) RunTriggers(ctx context.Context, input []byte) ([]byte, e
 	return nil, nil
 }
 
-func (o *Orchestrator) valid(ctx context.Context) error {
-	id := WorkflowID(ctx)
-	if id == "" {
-		return fmt.Errorf("execution ID not set")
+func (o *Orchestrator) Start(ctx context.Context, data []byte) (output []byte, err error) {
+	if o.workflow == nil {
+		panic("no workflow loaded")
 	}
 
-	// we must have a workflow ID if we have a persister
+	id := WorkflowID(ctx)
+	if id == "" {
+		return nil, fmt.Errorf("execution ID not set")
+	}
+
 	if o.persister != nil {
-		if err := o.persister.IsUniqueWorkflowID(ctx, id); err != nil {
-			return fmt.Errorf("execution ID %s: %w", id, err)
+		err := o.persister.IsUniqueWorkflowID(ctx, id)
+		if err != nil && !IsRestoringMainWorkflow(ctx) {
+			if errors.Is(err, persistence.ErrWorkflowIDExists) {
+				// Workflow already exists, attempt to restore
+				restorable, err := o.RestorableWorkflows(ctx)
+				if err != nil {
+					return nil, err
+				}
+				if workflows, ok := restorable[o.workflow.Name]; ok {
+					if restorable, ok := workflows[id]; ok {
+						// Restore the workflow
+						return restorable.Entrypoint(ctx)
+					}
+				}
+				return nil, fmt.Errorf("workflow %s cannot be restored", id)
+			}
+			return nil, err
 		}
 	}
 
-	return nil
-}
-
-func (o *Orchestrator) Start(ctx context.Context, data []byte) (output []byte, err error) {
-	start, err := o.workflow.start()
+	startNode, err := o.workflow.startNode()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := o.valid(ctx); err != nil {
-		return nil, err
-	}
-
 	o.tryUpdatePersistenceStatus(ctx, persistence.StateOpen)
-	return o.executeNodeChain(ctx, start, data)
+	return o.executeNodeChain(ctx, startNode, data)
 }
 
 func (o *Orchestrator) StartAsync(ctx context.Context, data []byte) (output []byte, err error) {
-	start, err := o.workflow.start()
+	if o.workflow == nil {
+		panic("no workflow loaded")
+	}
+
+	id := WorkflowID(ctx)
+	if id == "" {
+		return nil, fmt.Errorf("execution ID not set")
+	}
+
+	if o.persister != nil {
+		err := o.persister.IsUniqueWorkflowID(ctx, id)
+		if err != nil && !IsRestoringMainWorkflow(ctx) {
+			if errors.Is(err, persistence.ErrWorkflowIDExists) {
+				// Workflow already exists, attempt to restore
+				restorable, err := o.RestorableWorkflows(ctx)
+				if err != nil {
+					return nil, err
+				}
+				if workflows, ok := restorable[o.workflow.Name]; ok {
+					if restorable, ok := workflows[id]; ok {
+						// Restore the workflow
+						go func() {
+							if _, err := restorable.Entrypoint(ctx); err != nil {
+								Logger(ctx).Error("failed to restore workflow", "workflow", id, "error", err)
+							}
+						}()
+						return nil, nil
+					}
+				}
+				return nil, fmt.Errorf("workflow %s cannot be restored", id)
+			}
+			return nil, err
+		}
+	}
+
+	startNode, err := o.workflow.startNode()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := o.valid(ctx); err != nil {
-		return nil, err
-	}
-
 	o.tryUpdatePersistenceStatus(ctx, persistence.StateOpen)
-	data, nodes, err := o.executeStep(ctx, start, data)
+	data, nodes, err := o.executeStep(ctx, startNode, data)
 	if err != nil {
 		return nil, err
 	}
@@ -917,6 +1023,16 @@ func (o *Orchestrator) nextNodes(node *Node, err error) ([]*Node, error) {
 	return nextNodes, nil
 }
 
+func isPanic(err error) bool {
+	for err != nil {
+		if errors.Is(err, ErrPanic) {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
+}
+
 func (o *Orchestrator) executeStep(ctx context.Context, node *Node, data []byte) ([]byte, []*Node, error) {
 	select {
 	case <-ctx.Done():
@@ -935,6 +1051,11 @@ func (o *Orchestrator) executeStep(ctx context.Context, node *Node, data []byte)
 		err = prvErr
 	} else {
 		data, err = o.executeNode(ctx, node, data)
+		if isPanic(err) && !o.failWorkflowOnActivityPanic {
+			// we cannot continue but the workflow is generally retryable after
+			// a code fix. We can keep it open.
+			return nil, nil, err
+		}
 	}
 
 	nextNodes, err := o.nextNodes(node, err)
@@ -974,7 +1095,7 @@ func (n *Node) RetryAttempts(ctx context.Context) int {
 
 // executeNodeChain executes a chain of nodes and returns the output.
 // If the chain contains a merge point, the outputs are merged using the reducer
-// if present or uses the preceding fan-out nodes output.  Parallel nodes must
+// if present or uses the preceding fan-out nodes output. Parallel nodes must
 // converge at a merge node.
 func (o *Orchestrator) executeNodeChain(ctx context.Context, node *Node, data []byte) ([]byte, error) {
 	ctx = node.withActivityStartTime(ctx, time.Now().UTC())
@@ -1084,19 +1205,39 @@ func (o *Orchestrator) tryUpdatePersistenceStatus(ctx context.Context, state per
 }
 
 func (o *Orchestrator) updatePersistenceStatus(ctx context.Context, id string, state persistence.TaskState) error {
-	status := persistence.WorkflowStatus{
-		WorkflowID:    id,
-		WorkflowName:  o.workflow.Name,
-		WorkflowState: state,
-		Timestamp:     time.Now().UTC(),
-		NonRestorable: IsNonRestorable(ctx),
+	parentID := ParentWorkflowID(ctx)
+	var parentIDPtr *string
+	if parentID != "" {
+		parentIDPtr = &parentID
 	}
 
-	return o.persister.LogWorkflowStatus(ctx, id, status)
+	status := persistence.WorkflowStatus{
+		WorkflowID:       id,
+		WorkflowName:     o.workflow.Name,
+		WorkflowState:    state,
+		Timestamp:        time.Now().UTC(),
+		NonRestorable:    IsNonRestorable(ctx),
+		ParentWorkflowID: parentIDPtr,
+	}
+
+	return o.persister.LogWorkflowStatus(ctx, status)
 }
 
+var ErrPanic = errors.New("panic in activity")
+
 // executeNode executes a single node and returns its output.
-func (o *Orchestrator) executeNode(ctx context.Context, node *Node, input []byte) ([]byte, error) {
+func (o *Orchestrator) executeNode(ctx context.Context, node *Node, input []byte) (output []byte, activityError error) {
+	// Defer a function to recover from panics and log the panic details.
+	defer func() {
+		if r := recover(); r != nil {
+			// Log the panic and return a generic error
+			Logger(ctx).Error("panic in executeNode", "node", node.ActivityName, "panic", r)
+			o.logWorkflowStep(ctx, node, input, nil, fmt.Errorf("panic: %v", r), persistence.StatePanicked)
+			activityError = fmt.Errorf("activity %s: panic occurred: %v: %w", node.ActivityName, r, ErrPanic)
+			output = nil
+		}
+	}()
+
 	ctx = node.withActivityStartTime(ctx, time.Now().UTC())
 
 	activity, ok := o.GetActivity(node)
@@ -1107,17 +1248,14 @@ func (o *Orchestrator) executeNode(ctx context.Context, node *Node, input []byte
 	ctx1 := o.withNodeContext(ctx, node)
 	ctx1 = withActivityToken(ctx1)
 
-	var output []byte
-	var activityError error
 	var dynamicRoute *DynamicRoute
-
-	var attempt int
+	attempt := 1
 	maxAttempts := node.RetryPolicyOrDefault(o.defaultRetryPolicy).MaxRetries
 	if maxAttempts == 0 {
 		maxAttempts = math.MaxInt
 	}
 
-	for attempt = 1; attempt <= maxAttempts; attempt++ {
+	for attempt <= maxAttempts {
 		// check if the context has been cancelled
 		select {
 		case <-ctx1.Done():
@@ -1131,8 +1269,7 @@ func (o *Orchestrator) executeNode(ctx context.Context, node *Node, input []byte
 		output, activityError = activity(ctx1, input)
 
 		state := persistence.StateCompleted
-		dynamicRouteErr := errors.As(activityError, &dynamicRoute)
-		if activityError != nil && !dynamicRouteErr || dynamicRouteErr && dynamicRoute.Err != nil {
+		if activityError != nil && (!errors.As(activityError, &dynamicRoute) || (dynamicRoute.Err != nil)) {
 			state = persistence.StateFailed
 		}
 		o.logWorkflowStep(ctx1, node, input, output, activityError, state)
@@ -1148,8 +1285,9 @@ func (o *Orchestrator) executeNode(ctx context.Context, node *Node, input []byte
 		}
 
 		delay := node.RetryPolicyOrDefault(o.defaultRetryPolicy).backoff(attempt)
-		Logger(ctx).Error("failed to log workflow step", "activity", node.ActivityName, "attempt", attempt, "delay", delay, "error", activityError)
+		Logger(ctx).Error("retrying activity after failurep", "activity", node.ActivityName, "attempt", attempt, "delay", delay, "error", activityError)
 		<-time.After(delay)
+		attempt++
 	}
 
 	if errors.As(activityError, &dynamicRoute) && dynamicRoute.Err != nil {
@@ -1228,23 +1366,31 @@ func (o *Orchestrator) tryLogWorkflowStep(ctx context.Context, entry *persistenc
 	}
 }
 
+type RestorableWorkflowState struct {
+	Status     *persistence.WorkflowStatus
+	Entrypoint func(ctx context.Context) ([]byte, error)
+}
+
 // RestorableWorkflows returns a map of workflowName to a map of workflowID to
 // a an array of node functions that allow the client to restore them.
-type RestorableWorkflows map[string]map[string]func(ctx context.Context) ([]byte, error)
+type RestorableWorkflows map[string]map[string]RestorableWorkflowState
 
-func (o *Orchestrator) RestoreWorkflowsAsync(ctx context.Context) error {
+func (o *Orchestrator) RestoreWorkflowsAsync(ctx context.Context, withChildWorkflows bool) error {
 	restorable, err := o.RestorableWorkflows(ctx)
 	if err != nil {
 		return err
 	}
 
 	for _, workflows := range restorable {
-		for id, activity := range workflows {
-			go func(id string, activity func(ctx context.Context) ([]byte, error)) {
-				if _, err := activity(ctx); err != nil {
+		for id, restorable := range workflows {
+			go func(id string, state RestorableWorkflowState) {
+				if state.Status.ParentWorkflowID != nil && !withChildWorkflows {
+					return
+				}
+				if _, err := state.Entrypoint(ctx); err != nil {
 					Logger(ctx).Error("failed to restore workflow", "workflow", id, "error", err)
 				}
-			}(id, activity)
+			}(id, restorable)
 		}
 	}
 
@@ -1281,9 +1427,15 @@ func (o *Orchestrator) RestorableWorkflows(ctx context.Context) (RestorableWorkf
 		}
 
 		// Build a map of completed nodes and their outputs
+		var initialNodeInput []byte
 		completedNodeOutput := make(map[int64][]byte)
 		completedNodeErrors := make(map[int64]*DynamicRoute)
-		for _, step := range steps {
+		for i, step := range steps {
+			// input only matters for the first node, as everything else is path dependent.
+			// we only capture it here in case we restore a workflow from the beginning.
+			if i == 0 {
+				initialNodeInput = steps[0].Input
+			}
 			if step.ActivityState == persistence.StateCompleted {
 				completedNodeOutput[step.NodeID] = step.Output
 				var dynamicRoute DynamicRoute
@@ -1320,9 +1472,15 @@ func (o *Orchestrator) RestorableWorkflows(ctx context.Context) (RestorableWorkf
 
 		node := earliestPendingNode
 		if node == nil {
-			restorable[o.workflow.Name] = make(map[string]func(ctx context.Context) ([]byte, error))
-			restorable[o.workflow.Name][workflow.WorkflowID] = func(ctx context.Context) ([]byte, error) {
-				return o.Start(ctx, nil)
+			restorable[o.workflow.Name] = make(map[string]RestorableWorkflowState)
+			restorable[o.workflow.Name][workflow.WorkflowID] = RestorableWorkflowState{
+				Status: workflow,
+				Entrypoint: func(ctx context.Context) ([]byte, error) {
+					// if the earliest node is nil, we're restoring this workflow from
+					// the beginning and have to use the initial node input.
+					ctx = WithRestoringMainWorkflow(ctx)
+					return o.Start(ctx, initialNodeInput)
+				},
 			}
 			return restorable, nil
 		}
@@ -1348,11 +1506,15 @@ func (o *Orchestrator) RestorableWorkflows(ctx context.Context) (RestorableWorkf
 			}
 		}
 		if _, ok := restorable[o.workflow.Name]; !ok {
-			restorable[o.workflow.Name] = make(map[string]func(ctx context.Context) ([]byte, error))
+			restorable[o.workflow.Name] = make(map[string]RestorableWorkflowState)
 		}
-		restorable[o.workflow.Name][workflow.WorkflowID] = func(ctx context.Context) ([]byte, error) {
-			return o.executeNodeChain(ctx, node, inputData)
-		}
+		restorable[o.workflow.Name][workflow.WorkflowID] =
+			RestorableWorkflowState{
+				Status: workflow,
+				Entrypoint: func(ctx context.Context) ([]byte, error) {
+					return o.executeNodeChain(ctx, node, inputData)
+				},
+			}
 	}
 
 	return restorable, nil

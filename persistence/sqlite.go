@@ -63,6 +63,7 @@ func NewSQLitePersister(dbPath string) (*SQLitePersister, error) {
 		workflow_name TEXT,
 		state TEXT NOT NULL,
 		timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		parent_workflow_id TEXT,
 		non_restorable BOOLEAN DEFAULT FALSE
 	)`)
 	if err != nil {
@@ -113,18 +114,18 @@ func (s *SQLitePersister) LogWorkflowStep(ctx context.Context, entry *WorkflowLo
 	return err
 }
 
-func (s *SQLitePersister) LogWorkflowStatus(ctx context.Context, workflowID string, status WorkflowStatus) error {
-	query := `INSERT INTO workflow_status_log (workflow_id, workflow_name, state, timestamp, non_restorable) VALUES (?, ?, ?, ?, ?)`
-	_, err := s.DB.ExecContext(ctx, query, workflowID, status.WorkflowName, status.WorkflowState, status.Timestamp, status.NonRestorable)
+func (s *SQLitePersister) LogWorkflowStatus(ctx context.Context, status WorkflowStatus) error {
+	query := `INSERT INTO workflow_status_log (workflow_id, workflow_name, state, timestamp, non_restorable, parent_workflow_id) VALUES (?, ?, ?, ?, ?, ?)`
+	_, err := s.DB.ExecContext(ctx, query, status.WorkflowID, status.WorkflowName, status.WorkflowState, status.Timestamp, status.NonRestorable, status.ParentWorkflowID)
 	return err
 }
 
 // LoadWorkflows loads all workflows in a given state but have not reached a terminal state.
 func (s *SQLitePersister) LoadOpenWorkflows(ctx context.Context, workflowName string) ([]*WorkflowStatus, error) {
 	query := `
-    SELECT wsl.workflow_id, wsl.state, wsl.timestamp, wsl.non_restorable
+    SELECT wsl.workflow_id, wsl.state, wsl.timestamp, wsl.non_restorable, wsl.parent_workflow_id
     FROM workflow_status_log wsl
-    WHERE wsl.state = 'open'
+    WHERE (wsl.state = 'open' OR wsl.state = 'panicked')
 	AND wsl.workflow_name = ?
     AND NOT EXISTS (
         SELECT 1
@@ -142,7 +143,7 @@ func (s *SQLitePersister) LoadOpenWorkflows(ctx context.Context, workflowName st
 	var statuses []*WorkflowStatus
 	for rows.Next() {
 		var ws WorkflowStatus
-		err := rows.Scan(&ws.WorkflowID, &ws.WorkflowState, &ws.Timestamp, &ws.NonRestorable)
+		err := rows.Scan(&ws.WorkflowID, &ws.WorkflowState, &ws.Timestamp, &ws.NonRestorable, &ws.ParentWorkflowID)
 		if err != nil {
 			return nil, err
 		}

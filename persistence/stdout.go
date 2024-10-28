@@ -40,7 +40,7 @@ func (s *SlogDebugger) LogWorkflowStep(ctx context.Context, entry *WorkflowLogEn
 	return nil
 }
 
-func (s *SlogDebugger) LogWorkflowStatus(ctx context.Context, workflowID string, status WorkflowStatus) error {
+func (s *SlogDebugger) LogWorkflowStatus(ctx context.Context, status WorkflowStatus) error {
 	s.logger.Info("WorkflowStatus", "workflowID", status.WorkflowID, "state", status.WorkflowState, "timestamp", status.Timestamp, "nonRecoverable", status.NonRestorable)
 	return nil
 }

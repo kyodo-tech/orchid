@@ -26,19 +26,6 @@ import (
 	"github.com/kyodo-tech/orchid/persistence"
 )
 
-var orchestratorRegistry = make(map[string]*orchid.Orchestrator)
-
-func registerOrchestrator(name string, o *orchid.Orchestrator) {
-	orchestratorRegistry[name] = o
-}
-
-func getOrchestratorByName(name string) (*orchid.Orchestrator, error) {
-	if o, ok := orchestratorRegistry[name]; ok {
-		return o, nil
-	}
-	return nil, fmt.Errorf("orchestrator %s not found", name)
-}
-
 func Nop(ctx context.Context, input []byte) ([]byte, error) {
 	return input, nil
 }
@@ -55,26 +42,28 @@ func PrintInput(ctx context.Context, input []byte) ([]byte, error) {
 	return input, nil
 }
 
-func StartChildWorkflowActivity(ctx context.Context, input []byte) ([]byte, error) {
-	<-time.After(1 * time.Second) // Simulate some work
+func StartChildWorkflowActivity(r orchid.OrchestratorRegistry) func(ctx context.Context, input []byte) ([]byte, error) {
+	return func(ctx context.Context, input []byte) ([]byte, error) {
+		<-time.After(1 * time.Second) // Simulate some work
 
-	orchestratorName, ok := orchid.ConfigString(ctx, "child-orchestrator-name")
-	if !ok {
-		return nil, fmt.Errorf("failed to get child orchestrator name")
+		orchestratorName, ok := orchid.ConfigString(ctx, "child-orchestrator-name")
+		if !ok {
+			return nil, fmt.Errorf("failed to get child orchestrator name")
+		}
+
+		o, err := r.Get(orchestratorName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get child orchestrator: %w", err)
+		}
+
+		childWorkflowID := uuid.New().String()
+		ctx1 := orchid.WithWorkflowID(ctx, childWorkflowID)
+
+		msg := fmt.Sprintf("Child workflow '%s' says hello, got input: %s", childWorkflowID, string(input))
+
+		fmt.Printf("Starting child workflow '%s'\n", childWorkflowID)
+		return o.Start(ctx1, []byte(msg))
 	}
-
-	o, err := getOrchestratorByName(orchestratorName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get child orchestrator: %w", err)
-	}
-
-	childWorkflowID := uuid.New().String()
-	ctx1 := orchid.WithWorkflowID(ctx, childWorkflowID)
-
-	msg := fmt.Sprintf("Child workflow '%s' says hello, got input: %s", childWorkflowID, string(input))
-
-	fmt.Printf("Starting child workflow '%s'\n", childWorkflowID)
-	return o.Start(ctx1, []byte(msg))
 }
 
 func mergeOutputs(outputs [][]byte) []byte {
@@ -96,13 +85,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	registry := orchid.NewOrchestratorRegistry()
+
 	// Define child workflows
 	co1 := orchid.NewOrchestrator(orchid.WithPersistence(persister))
 	co1.RegisterActivity("PrintActivity", PrintAndForward("Hello from co1"))
 	cw1 := orchid.NewWorkflow("child1")
 	cw1.AddNode(orchid.NewNode("PrintActivity"))
 	co1.LoadWorkflow(cw1)
-	registerOrchestrator("co1", co1) // Register co1
+	registry.Set("co1", co1) // Register co1
 
 	co2 := orchid.NewOrchestrator(orchid.WithPersistence(persister))
 	co2.RegisterActivity("ChildStep1", PrintAndForward("Hello from co2 (1)"))
@@ -112,7 +103,7 @@ func main() {
 	cw2.AddNode(orchid.NewNode("ChildStep2"))
 	cw2.Link("ChildStep1", "ChildStep2")
 	co2.LoadWorkflow(cw2)
-	registerOrchestrator("co2", co2) // Register co2
+	registry.Set("co2", co2) // Register co2
 
 	// Initialize parent orchestrator
 	o := orchid.NewOrchestrator(
@@ -121,8 +112,8 @@ func main() {
 	)
 
 	o.RegisterActivity("Start", PrintInput)
-	o.RegisterActivity("StartCw1", StartChildWorkflowActivity)
-	o.RegisterActivity("StartCw2", StartChildWorkflowActivity)
+	o.RegisterActivity("StartCw1", StartChildWorkflowActivity(registry))
+	o.RegisterActivity("StartCw2", StartChildWorkflowActivity(registry))
 	o.RegisterActivity("WaitAndMerge", Nop)
 	o.RegisterReducer("WaitAndMerge", mergeOutputs)
 

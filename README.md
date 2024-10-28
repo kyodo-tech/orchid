@@ -38,6 +38,8 @@ Orchid is a lot simpler than other workflow engines, designed to be easy to unde
 
 - **Fixed Activity Interface**: For simple fault tolerance, all activities must adhere to a simple interface with an input and output byte array. This design choice simplifies the implementation but may require additional logic for complex data types client side.
 - **Parallelism via Merge Points**: Orchid focuses primarily on serial workflow execution, but parallelism can be achieved through merge points where multiple branches converge into a single node. This implies that every workflow ends with a single node, which can be a merge point where parallel branches converge.
+- **Dynamic Parallelism via Activities**: Orchid can support dynamic fan-out/fan-in or dynamic parallelism scenarios, where the number of parallel tasks is determined at runtime. This is achieved by using activities to spawn child workflows or goroutines. However, panics in spawned goroutines _MAY_ still crash the program.
+- **Activity Panic Recovery**: Activity panics can be recovered in both top-level and child workflows. Persisted workflows can therefore continue after code fixes. This only works for panics in activities that don't occur in goroutines spawned by activities. The functional option `WithFailWorkflowOnActivityPanic` of the orchestrator can be used terminate workflow and mark them non-restorable after activity panics.
 - **Idempotency and Error Handling**: Orchid ensures that workflows and activities have unique execution IDs to prevent duplicate processing. All activities are executed at-least-once, so they _MUST BE_ **idempotent** to ensure that retries do not cause unintended side effects. Pass the `ActivityToken` to external systems to ensure idempotency and fault tolerance.
 - **Atomicity and Side Effects**: Activities _SHALL_ perform **atomic operations**, non-atomicity (like partial database updates) may leave the system in an inconsistent state if they fail midway.
 - **Avoid shared mutable state in Activities**: Activities _SHOULD NOT_ share mutable state between them, as this can lead to race conditions and data corruption. Use the `context` package to pass data between activities, atomic datastores or synchronization primitives for shared state.
@@ -46,7 +48,9 @@ Orchid is a lot simpler than other workflow engines, designed to be easy to unde
     + Further to note, the NodeConfig is currently stored **in plaintext JSON** in the persister.
 - **Distributed Execution**: Clients can utilize the Activity interface to implement an executor pattern for remote execution of tasks. Each activity executes with a stable ActivityToken that can be used to register callbacks for human-in-the-loop scenarios. The token will be restored in failure cases to ensure the workflow can continue.
 
+### Note on LangChain Comparison
 
+Orchid supports workflows with modular task chaining, error handling, and context-passing—concepts similar to LangChain's approach to workflow chaining and agent-driven tasks. While language-agnostic, Orchid can be extended for LLMs and dynamic prompts, offering a Go-based alternative for structured workflows akin to [LangChain](https://www.langchain.com/).
 
 ## Usage
 

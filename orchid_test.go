@@ -179,24 +179,13 @@ func TestOrchestrator_RestoreWorkflowAfterPanic(t *testing.T) {
 	workflowID := uuid.New().String()
 	ctx := orchid.WithWorkflowID(context.Background(), workflowID)
 
-	var recovered bool
-	// run recoverable code
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				recovered = true
-			}
-		}()
+	// Run the workflow and expect an error instead of a panic
+	_, err = o.Start(ctx, []byte{})
+	assert.Error(t, err, "Expected error in Start due to panic in activity B")
+	assert.Contains(t, err.Error(), "panic occurred", "Error should indicate a panic occurred in activity B")
 
-		_, err := o.Start(ctx, []byte{})
-		if err != nil {
-			t.Logf("Start returned error: %v", err)
-		}
-	}()
-
-	assert.True(t, recovered, "Expected panic in Start")
-
-	err = verifyState(t, persister, 3, workflowID, "B")
+	// Verify that the orchestrator logged the error and updated the workflow state
+	err = verifyState(t, persister, 4, workflowID, "B")
 	assert.NoError(t, err)
 
 	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 1)
@@ -228,15 +217,15 @@ func TestOrchestrator_RestoreWorkflowAfterPanic(t *testing.T) {
 
 	var out []byte
 	for _, workflows := range restorable {
-		for _, w := range workflows {
-			out, err = w(ctx)
+		for _, restorable := range workflows {
+			out, err = restorable.Entrypoint(ctx)
 			assert.NoError(t, err)
 		}
 	}
 
 	assert.Equal(t, "ABC", string(out))
 
-	err = verifyState(t, persister, 7, workflowID, "C")
+	err = verifyState(t, persister, 8, workflowID, "C")
 	assert.NoError(t, err)
 
 	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 0)
@@ -294,25 +283,11 @@ func TestOrchestrator_RestoreWorkflowAfterPanicWithRouting(t *testing.T) {
 	workflowID := uuid.New().String()
 	ctx := orchid.WithWorkflowID(context.Background(), workflowID)
 
-	var recovered bool
-	// run recoverable code
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				recovered = true
-			}
-		}()
-
-		_, err := o.Start(ctx, []byte{})
-		if err != nil {
-			t.Logf("Start returned error: %v", err)
-		}
-	}()
-
-	assert.True(t, recovered, "Expected panic in Start")
+	_, err = o.Start(ctx, []byte{})
+	assert.Error(t, err, "Expected error in Start due to panic in activity B")
 
 	// 2x successful nodes + 1 failure
-	err = verifyState(t, persister, 5, workflowID, "D")
+	err = verifyState(t, persister, 6, workflowID, "D")
 	assert.NoError(t, err)
 
 	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 1)
@@ -328,8 +303,8 @@ func TestOrchestrator_RestoreWorkflowAfterPanicWithRouting(t *testing.T) {
 
 	var out []byte
 	for _, workflows := range restorable {
-		for _, w := range workflows {
-			out, err = w(ctx)
+		for _, restorable := range workflows {
+			out, err = restorable.Entrypoint(ctx)
 			assert.NoError(t, err)
 		}
 	}
@@ -337,7 +312,7 @@ func TestOrchestrator_RestoreWorkflowAfterPanicWithRouting(t *testing.T) {
 	assert.Equal(t, "ACD", string(out))
 
 	// 5+ 2x2 open complete on D and
-	err = verifyState(t, persister, 9, workflowID, "D")
+	err = verifyState(t, persister, 10, workflowID, "D")
 	assert.NoError(t, err)
 
 	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 0)
@@ -348,7 +323,7 @@ func verifyState(t *testing.T, persister persistence.Persister, nsteps int, work
 	// Verify that the workflow completed successfully
 	steps, err := persister.LoadWorkflowSteps(context.Background(), workflowID)
 	assert.NoError(t, err)
-	if !assert.Equal(t, len(steps), nsteps, fmt.Sprintf("Expected at least %v steps in the workflow log", nsteps)) {
+	if !assert.Equal(t, nsteps, len(steps), fmt.Sprintf("Expected at least %v steps in the workflow log", nsteps)) {
 		return fmt.Errorf("Expected at least %v steps in the workflow log", nsteps)
 	}
 
