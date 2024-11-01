@@ -72,3 +72,49 @@ func TestGraph_MarkParallelNodes(t *testing.T) {
 		t.Errorf("Expected 7 parallel nodes, got %d", count)
 	}
 }
+
+func TestGraph_MarkParallelNodesInWorkflow(t *testing.T) {
+	wf := NewWorkflow("test_workflow")
+
+	// A -> B -> D -> E1 -> E3 -> G
+	//  \         \-> E2 -------/
+	//   -> C -> F ------------/
+	// B, C, D, E1, E2, F are parallel nodes, but A, G are not
+
+	// Create nodes with IDs:
+	// A(0), B(1), C(2), D(3), E1(4), E2(5), F(6), G(7), E3(8)
+	wf.AddNewNode("A")
+	wf.AddNewNode("B")
+	wf.AddNewNode("C")
+	wf.AddNewNode("D")
+	wf.AddNewNode("E1")
+	wf.AddNewNode("E2")
+	wf.AddNewNode("F")
+	wf.AddNewNode("G")
+	wf.AddNewNode("E3")
+
+	wf.Link("A", "B")
+	wf.Link("A", "C")
+	wf.Link("B", "D")
+	wf.Link("D", "E1")
+	wf.Link("D", "E2")
+	wf.Link("E1", "G")
+	wf.Link("E2", "E3")
+	wf.Link("E3", "G")
+	wf.Link("C", "F")
+	wf.Link("F", "G")
+
+	parallelNodes := markParallelNodes(wf.directedGraph)
+
+	count := 0
+	for id := range parallelNodes {
+		if id == 0 || id == 7 {
+			t.Errorf("Node %d should not be parallel", id)
+		}
+		count++
+	}
+
+	if count != 7 {
+		t.Errorf("Expected 7 parallel nodes, got %d", count)
+	}
+}

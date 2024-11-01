@@ -316,8 +316,8 @@ func TestOrchestrator_RestoreWorkflowAfterPanicWithRouting(t *testing.T) {
 		BackoffCoefficient: 1.0,
 	})))
 
+	wf.Link("A", "C") // no parallelism and C is the "preferred" route
 	wf.Link("A", "B")
-	wf.Link("A", "C")
 	wf.Link("C", "D")
 
 	// Load the workflow into the orchestrator

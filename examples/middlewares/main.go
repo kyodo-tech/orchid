@@ -21,9 +21,9 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/google/uuid"
 	"github.com/kyodo-tech/orchid"
 	"github.com/kyodo-tech/orchid/middleware"
-	"github.com/google/uuid"
 )
 
 type flow struct {
@@ -50,10 +50,8 @@ func main() {
 	registerFlowActivity(o, "B", fnB)
 
 	wf := orchid.NewWorkflow("test_workflow").
-		AddNodes(
-			orchid.NewNode("A"),
-			orchid.NewNode("B"),
-		).
+		AddNewNode("A").
+		AddNewNode("B").
 		Link("A", "B")
 
 	o.LoadWorkflow(wf)

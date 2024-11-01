@@ -22,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -145,19 +146,12 @@ func (wf *Workflow) getLastNode() *Node {
 	return lastNode
 }
 
-func (wf *Workflow) AddNodes(nodes ...*Node) *Workflow {
-	for _, node := range nodes {
-		wf.AddNode(node)
-	}
-	return wf
-}
-
 func (wf *Workflow) Link(from, to string) *Workflow {
-	wf.AddEdge(&Edge{From: from, To: to})
+	wf.addEdge(&Edge{From: from, To: to})
 	return wf
 }
 
-func (wf *Workflow) AddEdge(edge *Edge) error {
+func (wf *Workflow) addEdge(edge *Edge) error {
 	var from, to graph.Node
 	var exists bool
 	if from, exists = wf.activity2Node[edge.From]; !exists {
@@ -168,7 +162,7 @@ func (wf *Workflow) AddEdge(edge *Edge) error {
 	}
 
 	wf.Edges = append(wf.Edges, edge)
-	wf.directedGraph.SetEdge(wf.directedGraph.NewEdge(from, to))
+	wf.directedGraph.SetEdge(simple.Edge{F: from, T: to})
 
 	return nil
 }
@@ -193,7 +187,7 @@ func (wf *Workflow) Import(workflow []byte) error {
 	}
 
 	for _, edge := range tmp.Edges {
-		if err := wf.AddEdge(edge); err != nil {
+		if err := wf.addEdge(edge); err != nil {
 			return err
 		}
 	}
@@ -409,12 +403,13 @@ func (wf *Workflow) startNode() (*Node, error) {
 }
 
 type Node struct {
-	ID           int64                  `json:"id"`
-	ActivityName string                 `json:"activity"`
-	Config       map[string]interface{} `json:"config,omitempty"`
-	Type         NodeType               `json:"type,omitempty"`
-	RetryPolicy  *RetryPolicy           `json:"retry,omitempty"`
-	EditLink     *string                `json:"link,omitempty"`
+	ID                    int64                  `json:"id"`
+	ActivityName          string                 `json:"activity"`
+	Config                map[string]interface{} `json:"config,omitempty"`
+	Type                  NodeType               `json:"type,omitempty"`
+	RetryPolicy           *RetryPolicy           `json:"retry,omitempty"`
+	EditLink              *string                `json:"link,omitempty"`
+	DisableSequentialFlow bool                   `json:"disable_sequential_flow,omitempty"`
 }
 
 type NodeOption func(*Node)
@@ -446,6 +441,12 @@ func WithNodeRetryPolicy(policy *RetryPolicy) NodeOption {
 func WithNodeEditLink(link string) NodeOption {
 	return func(n *Node) {
 		n.EditLink = &link
+	}
+}
+
+func WithNodeDisableSequentialFlow() NodeOption {
+	return func(n *Node) {
+		n.DisableSequentialFlow = true
 	}
 }
 
@@ -548,6 +549,10 @@ type Edge struct {
 
 type Activity func(ctx context.Context, input []byte) (output []byte, err error)
 
+func NopActivity(ctx context.Context, input []byte) ([]byte, error) {
+	return input, nil
+}
+
 type Entrypoint func(ctx context.Context) ([]byte, error)
 
 type Middleware func(Activity) Activity
@@ -593,6 +598,7 @@ type Orchestrator struct {
 
 	middlewares []Middleware
 
+	forcedTransitionsAllowed    bool
 	failWorkflowOnActivityPanic bool
 }
 
@@ -633,21 +639,44 @@ func WithDefaultRetryPolicy(policy *RetryPolicy) OrchestratorOption {
 	}
 }
 
-func WithFailWorkflowOnActivityPanic(fail bool) OrchestratorOption {
+func WithFailWorkflowOnActivityPanic() OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.failWorkflowOnActivityPanic = fail
+		o.failWorkflowOnActivityPanic = true
 	}
 }
 
-func (o *Orchestrator) LoadWorkflow(w *Workflow) {
+func WithForcedTransitions() OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.forcedTransitionsAllowed = true
+	}
+}
+
+func (o *Orchestrator) LoadWorkflow(w *Workflow) error {
 	// check if activities are registered
 	for _, node := range w.Nodes {
 		if _, exists := o.registry[node.ActivityName]; !exists {
-			panic(fmt.Sprintf("activity %s not registered", node.ActivityName))
+			// panic(fmt.Sprintf("activity %s not registered", node.ActivityName))
+			return fmt.Errorf("activity %s: %w", node.ActivityName, ErrOrchestratorActivityNotFound)
 		}
 	}
 	o.parallel = markParallelNodes(w.directedGraph)
 	o.workflow = w
+
+	exitNodes := w.exitNodes()
+	for _, node := range exitNodes {
+		// ensure exit node isn't parallel
+		if _, ok := o.parallel[node.ID]; ok {
+			// check if it has more than one incoming edge
+			o.logger.Warn("exit node is part of a potential parallel path"+
+				"this can lead to unintended loops. You can use the `NopActivity`"+
+				"to the exit node to avoid this", "node", node.ActivityName)
+			// return fmt.Errorf("exit node %s is part of a parallel path,"+
+			// 	"this can lead to unintended loops. You can use the `NopActivity`"+
+			// 	"to the exit node to avoid this", node.ActivityName)
+		}
+	}
+
+	return nil
 }
 
 func (o *Orchestrator) RegisterActivity(name string, activity Activity) {
@@ -1016,6 +1045,11 @@ func (o *Orchestrator) nextNodes(node *Node, err error) ([]*Node, error) {
 			return nil, fmt.Errorf("node %s: %w", route.Key, ErrNodeNotFound)
 		}
 
+		// ensure we have a valid route from the current node
+		if !o.forcedTransitionsAllowed && !o.workflow.directedGraph.HasEdgeFromTo(node.ID, nextNode.ID) {
+			return nil, fmt.Errorf("node %s: %w", route.Key, ErrNodeNotFound)
+		}
+
 		return []*Node{nextNode}, nil
 	} else if err != nil {
 		return nil, err
@@ -1027,13 +1061,31 @@ func (o *Orchestrator) nextNodes(node *Node, err error) ([]*Node, error) {
 	}
 
 	var nextNodes []*Node
-	for next.Next() {
-		nextNode, ok := o.GetNode(next.Node())
+	successors := o.workflow.directedGraph.From(node.ID)
+
+	var nodeIDs []int64
+	for successors.Next() {
+		nodeIDs = append(nodeIDs, successors.Node().ID())
+	}
+
+	// Sort node IDs for deterministic order
+	sort.Slice(nodeIDs, func(i, j int) bool {
+		return nodeIDs[i] < nodeIDs[j]
+	})
+
+	for _, id := range nodeIDs {
+		nextNode, ok := o.GetNode(simple.Node(id))
 		if !ok {
-			return nil, fmt.Errorf("node %d: %w", next.Node().ID(), ErrNodeNotFound)
+			return nil, fmt.Errorf("node %d: %w", id, ErrNodeNotFound)
 		}
 		nextNodes = append(nextNodes, nextNode)
 	}
+
+	// If sequential flow is enabled, pick the first next node
+	// if !node.DisableSequentialFlow && len(nextNodes) > 1 {
+	// 	nextNodes = nextNodes[:1]
+	// }
+	// Moved to executeNodeChain
 
 	return nextNodes, nil
 }
@@ -1133,6 +1185,15 @@ func (o *Orchestrator) executeNodeChain(ctx context.Context, node *Node, data []
 
 		if len(nextNodes) == 1 {
 			node = nextNodes[0]
+			continue
+		}
+
+		// Implicit parallelism must be enabled.
+		if !node.DisableSequentialFlow {
+			// Pick the first next node deterministically
+			node = nextNodes[0]
+			// Log a warning if there are multiple outgoing edges
+			Logger(ctx).Warn("Node has multiple outgoing edges; only the first will be followed due to sequential flow", "node", node.ActivityName)
 			continue
 		}
 

@@ -79,7 +79,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	// Initialize SQLite persister
-	persister, err := persistence.NewSQLitePersister("orchid.db")
+	persister, err := persistence.NewSQLitePersister(":memory:")
 	if err != nil {
 		fmt.Println("Failed to initialize SQLite persister:", err)
 		os.Exit(1)
@@ -119,10 +119,12 @@ func main() {
 
 	// Define parent workflow
 	wf := orchid.NewWorkflow("parent, main workflow")
-	wf.AddNode(orchid.NewNode("Start"))
-	wf.AddNode(orchid.NewNode("StartCw1", orchid.WithNodeConfig(map[string]interface{}{
-		"child-orchestrator-name": "co1",
-	})))
+	wf.AddNode(orchid.NewNode("Start", orchid.WithNodeDisableSequentialFlow()))
+	wf.AddNode(orchid.NewNode("StartCw1",
+		orchid.WithNodeConfig(map[string]interface{}{
+			"child-orchestrator-name": "co1",
+		}),
+	))
 	wf.AddNode(orchid.NewNode("StartCw2", orchid.WithNodeConfig(map[string]interface{}{
 		"child-orchestrator-name": "co2",
 	})))
