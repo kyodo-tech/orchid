@@ -2,19 +2,32 @@ package orchid
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 )
 
-// Snapshotter with cleanup capability
 type Snapshotter struct {
-	mu   sync.Mutex
-	data map[string][]byte
+	mu            sync.Mutex
+	data          map[string][]byte
+	attributeData map[string]map[string]interface{}
+	fields        []string
 }
 
 // NewShapshotter initializes a new checkpoint activity with data storage.
-func NewShapshotter() *Snapshotter {
+func NewSnapshotter() *Snapshotter {
 	return &Snapshotter{
-		data: make(map[string][]byte),
+		data:          make(map[string][]byte),
+		attributeData: make(map[string]map[string]interface{}),
+	}
+}
+
+// NewAttributeShapshotter can be used for both full and partial snapshotting.
+func NewAttributeShapshotter(fields []string) *Snapshotter {
+	return &Snapshotter{
+		data:          make(map[string][]byte),
+		attributeData: make(map[string]map[string]interface{}),
+		fields:        fields,
 	}
 }
 
@@ -34,16 +47,91 @@ func (chp *Snapshotter) Save(ctx context.Context, input []byte) ([]byte, error) 
 	return input, nil
 }
 
-// delete removes checkpoint data for the specified workflow ID.
-func (chp *Snapshotter) delete(workflowID string) {
+func (chp *Snapshotter) SaveAttributes(ctx context.Context, input []byte) ([]byte, error) {
 	chp.mu.Lock()
 	defer chp.mu.Unlock()
-	delete(chp.data, workflowID)
+
+	workflowID := WorkflowID(ctx)
+
+	// Parse input JSON
+	var inputData map[string]interface{}
+	if err := json.Unmarshal(input, &inputData); err != nil {
+		return nil, err
+	}
+
+	// Check if we have cached fields for this workflow
+	if cachedFields, ok := chp.attributeData[workflowID]; ok {
+		// Inject cached fields into inputData
+		for field, cachedValue := range cachedFields {
+			setNestedField(inputData, field, cachedValue)
+		}
+
+		// Return modified JSON with injected fields
+		output, err := json.Marshal(inputData)
+		if err != nil {
+			return nil, err
+		}
+
+		return output, nil
+	}
+
+	// If no cached fields, cache specified fields and return unmodified input
+
+	// Extract specified fields
+	cachedData := make(map[string]interface{})
+	for _, field := range chp.fields {
+		value := getNestedField(inputData, field)
+		if value != nil {
+			cachedData[field] = value
+		}
+	}
+
+	// Save cached data
+	chp.attributeData[workflowID] = cachedData
+
+	return input, nil
+}
+
+func setNestedField(data map[string]interface{}, field string, value interface{}) {
+	keys := strings.Split(field, ".")
+	var current interface{} = data
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			if m, ok := current.(map[string]interface{}); ok {
+				m[key] = value
+			}
+		} else {
+			if m, ok := current.(map[string]interface{}); ok {
+				if _, exists := m[key]; !exists {
+					m[key] = make(map[string]interface{})
+				}
+				current = m[key]
+			}
+		}
+	}
+}
+
+func getNestedField(data map[string]interface{}, field string) interface{} {
+	keys := strings.Split(field, ".")
+	var current interface{} = data
+	for _, key := range keys {
+		if m, ok := current.(map[string]interface{}); ok {
+			current = m[key]
+		} else {
+			return nil
+		}
+	}
+	return current
 }
 
 // Delete removes checkpoint data for a given workflow ID.
 func (chp *Snapshotter) Delete(ctx context.Context, input []byte) ([]byte, error) {
+	chp.mu.Lock()
+	defer chp.mu.Unlock()
+
 	workflowID := WorkflowID(ctx)
-	chp.delete(workflowID)
+	delete(chp.data, workflowID)
+	delete(chp.attributeData, workflowID)
+
 	return input, nil
 }
