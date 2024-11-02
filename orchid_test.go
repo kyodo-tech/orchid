@@ -269,7 +269,7 @@ func TestOrchestrator_RestoreWorkflowAfterPanic(t *testing.T) {
 
 	assert.Equal(t, "ABC", string(out))
 
-	err = verifyState(t, persister, 8, workflowID, "C")
+	err = verifyState(t, persister, 10, workflowID, "C")
 	assert.NoError(t, err)
 
 	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 0)
@@ -316,8 +316,8 @@ func TestOrchestrator_RestoreWorkflowAfterPanicWithRouting(t *testing.T) {
 		BackoffCoefficient: 1.0,
 	})))
 
-	wf.Link("A", "C") // no parallelism and C is the "preferred" route
 	wf.Link("A", "B")
+	wf.Link("A", "C")
 	wf.Link("C", "D")
 
 	// Load the workflow into the orchestrator
@@ -356,7 +356,7 @@ func TestOrchestrator_RestoreWorkflowAfterPanicWithRouting(t *testing.T) {
 	assert.Equal(t, "ACD", string(out))
 
 	// 5+ 2x2 open complete on D and
-	err = verifyState(t, persister, 10, workflowID, "D")
+	err = verifyState(t, persister, 12, workflowID, "D")
 	assert.NoError(t, err)
 
 	err = verifyOpenWorkflowCount(t, persister, "test_workflow", 0)

@@ -17,7 +17,6 @@ package persistence
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -107,10 +106,8 @@ func (s *SQLitePersister) IsUniqueWorkflowID(ctx context.Context, workflowID str
 }
 
 func (s *SQLitePersister) LogWorkflowStep(ctx context.Context, entry *WorkflowLogEntry) error {
-	config, _ := json.Marshal(entry.Config)
-	errorStr, _ := json.Marshal(entry.Error)
 	query := `INSERT INTO workflow_execution_log (workflow_id, node_id, activity_name, activity_token, state, input, output, config, error, timestamp, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := s.DB.ExecContext(ctx, query, entry.WorkflowID, entry.NodeID, entry.ActivityName, entry.ActivityToken, entry.ActivityState, entry.Input, entry.Output, string(config), string(errorStr), entry.Timestamp, entry.Duration.Milliseconds())
+	_, err := s.DB.ExecContext(ctx, query, entry.WorkflowID, entry.NodeID, entry.ActivityName, entry.ActivityToken, entry.ActivityState, entry.Input, entry.Output, entry.Config, entry.Error, entry.Timestamp, entry.Duration.Milliseconds())
 	return err
 }
 
@@ -175,7 +172,7 @@ func (s *SQLitePersister) LoadOpenWorkflows(ctx context.Context, workflowName st
 
 // Adjusted LoadWorkflowSteps method in SQLitePersister
 func (s *SQLitePersister) LoadWorkflowSteps(ctx context.Context, workflowID string) ([]*WorkflowLogEntry, error) {
-	query := `SELECT node_id, activity_name, input, output, state FROM workflow_execution_log WHERE workflow_id = ? ORDER BY timestamp ASC`
+	query := `SELECT node_id, activity_name, input, output, error, state FROM workflow_execution_log WHERE workflow_id = ? ORDER BY timestamp ASC`
 	rows, err := s.DB.QueryContext(ctx, query, workflowID)
 	if err != nil {
 		return nil, err
@@ -186,7 +183,7 @@ func (s *SQLitePersister) LoadWorkflowSteps(ctx context.Context, workflowID stri
 	for rows.Next() {
 		var step WorkflowLogEntry
 		var input, output []byte
-		if err := rows.Scan(&step.NodeID, &step.ActivityName, &input, &output, &step.ActivityState); err != nil {
+		if err := rows.Scan(&step.NodeID, &step.ActivityName, &input, &output, &step.Error, &step.ActivityState); err != nil {
 			return nil, err
 		}
 		step.Input = input

@@ -58,7 +58,11 @@ func TestGraph_MarkParallelNodes(t *testing.T) {
 		})
 	}
 
-	parallelNodes := markParallelNodes(g)
+	// allow all
+	spawningParallelNodes := map[int64]bool{
+		1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true,
+	}
+	parallelNodes := markParallelNodes(g, spawningParallelNodes)
 
 	count := 0
 	for id := range parallelNodes {
@@ -83,10 +87,10 @@ func TestGraph_MarkParallelNodesInWorkflow(t *testing.T) {
 
 	// Create nodes with IDs:
 	// A(0), B(1), C(2), D(3), E1(4), E2(5), F(6), G(7), E3(8)
-	wf.AddNewNode("A")
+	wf.AddNode(NewNode("A", WithNodeDisableSequentialFlow()))
 	wf.AddNewNode("B")
 	wf.AddNewNode("C")
-	wf.AddNewNode("D")
+	wf.AddNode(NewNode("D", WithNodeDisableSequentialFlow()))
 	wf.AddNewNode("E1")
 	wf.AddNewNode("E2")
 	wf.AddNewNode("F")
@@ -104,7 +108,7 @@ func TestGraph_MarkParallelNodesInWorkflow(t *testing.T) {
 	wf.Link("C", "F")
 	wf.Link("F", "G")
 
-	parallelNodes := markParallelNodes(wf.directedGraph)
+	parallelNodes := markParallelNodes(wf.directedGraph, wf.spawningParallelNodes())
 
 	count := 0
 	for id := range parallelNodes {

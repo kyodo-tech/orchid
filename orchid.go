@@ -196,7 +196,7 @@ func (wf *Workflow) Import(workflow []byte) error {
 }
 
 // markParallelNodes identifies nodes that are part of parallel paths between a fan-out and a fan-in node.
-func markParallelNodes(g *simple.DirectedGraph) map[int64]struct{} {
+func markParallelNodes(g *simple.DirectedGraph, spawningParallelNodes map[int64]bool) map[int64]struct{} {
 	parallel := make(map[int64]struct{})
 	visited := make(map[int64]struct{})
 	recursionStack := make([]int64, 0)
@@ -204,13 +204,13 @@ func markParallelNodes(g *simple.DirectedGraph) map[int64]struct{} {
 	// Start DFS traversal from root nodes (nodes with no incoming edges)
 	roots := findRootNodes(g)
 	for _, root := range roots {
-		dfsMarkParallelNodes(g, root, visited, recursionStack, parallel)
+		dfsMarkParallelNodes(g, root, visited, recursionStack, parallel, spawningParallelNodes)
 	}
 	return parallel
 }
 
 // dfsMarkParallelNodes performs a DFS traversal to identify and mark parallel nodes.
-func dfsMarkParallelNodes(g *simple.DirectedGraph, node graph.Node, visited map[int64]struct{}, recursionStack []int64, parallel map[int64]struct{}) {
+func dfsMarkParallelNodes(g *simple.DirectedGraph, node graph.Node, visited map[int64]struct{}, recursionStack []int64, parallel map[int64]struct{}, spawningParallelNodes map[int64]bool) {
 	nodeID := node.ID()
 
 	// If already visited, return.
@@ -232,7 +232,7 @@ func dfsMarkParallelNodes(g *simple.DirectedGraph, node graph.Node, visited map[
 		}
 	}
 
-	if len(nonAncestorSuccessors) > 1 {
+	if len(nonAncestorSuccessors) > 1 && spawningParallelNodes[nodeID] {
 		// Node is a fan-out node. Start separate traversals for each non-ancestor successor.
 		for _, successor := range nonAncestorSuccessors {
 			traversePath(g, successor, map[int64]struct{}{}, parallel, nodeID, make(map[int64]bool), recursionStack)
@@ -240,7 +240,7 @@ func dfsMarkParallelNodes(g *simple.DirectedGraph, node graph.Node, visited map[
 	} else {
 		// Continue DFS traversal.
 		for _, successor := range nonAncestorSuccessors {
-			dfsMarkParallelNodes(g, successor, visited, recursionStack, parallel)
+			dfsMarkParallelNodes(g, successor, visited, recursionStack, parallel, spawningParallelNodes)
 		}
 		// Also need to consider back edges for standard traversal.
 		successors.Reset()
@@ -249,7 +249,7 @@ func dfsMarkParallelNodes(g *simple.DirectedGraph, node graph.Node, visited map[
 			successorID := successor.ID()
 			if contains(recursionStack, successorID) {
 				// Back edge to ancestor; continue traversal without marking parallel.
-				dfsMarkParallelNodes(g, successor, visited, recursionStack, parallel)
+				dfsMarkParallelNodes(g, successor, visited, recursionStack, parallel, spawningParallelNodes)
 			}
 		}
 	}
@@ -327,7 +327,6 @@ func findRootNodes(g *simple.DirectedGraph) []graph.Node {
 	return roots
 }
 
-// Helper function to check if a slice contains an element.
 func contains(slice []int64, elem int64) bool {
 	for _, item := range slice {
 		if item == elem {
@@ -565,7 +564,10 @@ type DynamicRoute struct {
 }
 
 func (e *DynamicRoute) Error() string {
-	return e.Err.Error()
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return ""
 }
 
 func (e *DynamicRoute) Unwrap() error {
@@ -573,11 +575,31 @@ func (e *DynamicRoute) Unwrap() error {
 }
 
 func (e *DynamicRoute) MarshalJSON() ([]byte, error) {
-	return json.Marshal(*e)
+	type Alias DynamicRoute // Alias type to avoid recursion in MarshalJSON
+	return json.Marshal((*Alias)(e))
 }
 
 func (e *DynamicRoute) UnmarshalJSON(data []byte) error {
-	return json.Unmarshal(data, e)
+	type Alias DynamicRoute // Define an alias type to avoid recursive calls
+	aux := &struct {
+		Err string `json:"error"` // Capture "error" field as string for custom handling
+		*Alias
+	}{
+		Alias: (*Alias)(e),
+	}
+
+	// Unmarshal data into the auxiliary struct
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Handle the "error" field specifically, setting e.Err accordingly
+	if aux.Err != "" {
+		e.Err = fmt.Errorf(aux.Err)
+	} else {
+		e.Err = nil
+	}
+	return nil
 }
 
 func RouteTo(nodeKey string) error {
@@ -659,7 +681,8 @@ func (o *Orchestrator) LoadWorkflow(w *Workflow) error {
 			return fmt.Errorf("activity %s: %w", node.ActivityName, ErrOrchestratorActivityNotFound)
 		}
 	}
-	o.parallel = markParallelNodes(w.directedGraph)
+
+	o.parallel = markParallelNodes(w.directedGraph, w.spawningParallelNodes())
 	o.workflow = w
 
 	exitNodes := w.exitNodes()
@@ -667,16 +690,26 @@ func (o *Orchestrator) LoadWorkflow(w *Workflow) error {
 		// ensure exit node isn't parallel
 		if _, ok := o.parallel[node.ID]; ok {
 			// check if it has more than one incoming edge
-			o.logger.Warn("exit node is part of a potential parallel path"+
-				"this can lead to unintended loops. You can use the `NopActivity`"+
-				"to the exit node to avoid this", "node", node.ActivityName)
-			// return fmt.Errorf("exit node %s is part of a parallel path,"+
+			// o.logger.Warn("exit node is part of a potential parallel path"+
 			// 	"this can lead to unintended loops. You can use the `NopActivity`"+
-			// 	"to the exit node to avoid this", node.ActivityName)
+			// 	"to the exit node to avoid this", "node", node.ActivityName)
+			return fmt.Errorf("exit node %s is part of a parallel path,"+
+				"this can lead to unintended loops. You can use the `NopActivity`"+
+				"to the exit node to avoid this", node.ActivityName)
 		}
 	}
 
 	return nil
+}
+
+func (wf *Workflow) spawningParallelNodes() map[int64]bool {
+	spawningParallelNodes := make(map[int64]bool)
+	for _, node := range wf.Nodes {
+		if node.DisableSequentialFlow {
+			spawningParallelNodes[node.ID] = true
+		}
+	}
+	return spawningParallelNodes
 }
 
 func (o *Orchestrator) RegisterActivity(name string, activity Activity) {
@@ -1516,37 +1549,28 @@ func (o *Orchestrator) RestorableWorkflows(ctx context.Context) (RestorableWorkf
 				completedNodeOutput[step.NodeID] = step.Output
 				var dynamicRoute DynamicRoute
 				if step.Error != nil {
-					if err := dynamicRoute.UnmarshalJSON([]byte(*step.Error)); err == nil {
+					unescapedJson := *step.Error
+					err := dynamicRoute.UnmarshalJSON([]byte(unescapedJson))
+					if err == nil {
 						completedNodeErrors[step.NodeID] = &dynamicRoute
 					}
 				}
 			}
 		}
 
-		// Determine where to resume execution
-		var earliestPendingNode *Node
-		// Find predecessor that is completed and not parallel
-		for _, node := range o.workflow.Nodes {
-			_, parallel := o.parallel[node.ID]
-			_, completed := completedNodeOutput[node.ID]
-			if !completed || parallel {
-				predecessors := o.workflow.directedGraph.To(node.ID)
-				var isEarlier bool
-				for predecessors.Next() {
-					_, parallel := o.parallel[predecessors.Node().ID()]
-					_, completed := completedNodeOutput[predecessors.Node().ID()]
-					if completed && !parallel && (earliestPendingNode == nil || predecessors.Node().ID() < earliestPendingNode.ID) {
-						isEarlier = true
-						break
-					}
-				}
-				if isEarlier {
-					earliestPendingNode = node
+		// Find the last completed node
+		var lastCompletedNode *Node
+		var lastTimestamp time.Time
+		for _, step := range steps {
+			if step.ActivityState == persistence.StateCompleted {
+				if step.Timestamp.After(lastTimestamp) {
+					lastTimestamp = step.Timestamp
+					lastCompletedNode = o.workflow.Nodes[step.ActivityName]
 				}
 			}
 		}
 
-		node := earliestPendingNode
+		node := lastCompletedNode
 		if node == nil {
 			restorable[o.workflow.Name] = make(map[string]RestorableWorkflowState)
 			restorable[o.workflow.Name][workflow.WorkflowID] = RestorableWorkflowState{

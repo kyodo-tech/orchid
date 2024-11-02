@@ -32,7 +32,7 @@ func (wf *Workflow) isStartNode(node *Node) bool {
 }
 
 func (wf *Workflow) isParallelNode(node *Node) bool {
-	parallelNodes := markParallelNodes(wf.directedGraph)
+	parallelNodes := markParallelNodes(wf.directedGraph, wf.spawningParallelNodes())
 	_, ok := parallelNodes[node.ID]
 	return ok
 }

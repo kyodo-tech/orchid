@@ -11,7 +11,8 @@ Orchid is designed with the following principles in mind:
 - **Simplicity**: Designed to be easy to understand and use, with minimal boilerplate. Orchid's core is around 1k lines of code.
 - **Data Passing**: Facilitates data passing between nodes using byte arrays, aligning with flow-based programming paradigms.
 - **Dynamic Routing**: Supports dynamic routing based on data and error conditions, enabling flexible workflow logic.
-- **Sequential & Parallel Flow**: Orchid executes workflows sequentially by default, with support for per node implicit parallelism and client initiated dynamic parallelism.
+- **Sequential Execution by Default**: Executes workflows sequentially by default. When a node has multiple outgoing edges, it deterministically follows the first path unless parallelism is explicitly enabled.
+- **Explicit Parallelism**: Allows explicit parallel execution through the `DisableSequentialFlow` node option. By setting this option on a node, you enable it to execute multiple outgoing paths in parallel, making parallelism an intentional design choice.
 - **Hybrid Execution**: Allows both synchronous and asynchronous task execution.
 - **Modular**: Encourages modular code by encapsulating functionality within independent nodes.
 - **Retry Policies**: Allows to define custom retry policies for each task.
@@ -38,9 +39,17 @@ Connections to Related Concepts:
 Orchid is a lot simpler than other workflow engines, designed to be easy to understand and a low number of lines of code. This simplicity comes with trade-offs and constraints that users should be aware of:
 
 - **Fixed Activity Interface**: For simple fault tolerance, all activities must adhere to a simple interface with an input and output byte array. This design choice simplifies the implementation but may require additional logic for complex data types client side.
-- **Parallelism via Merge Points**: Orchid focuses primarily on serial workflow execution, but parallelism can be achieved through merge points where multiple branches converge into a single node. This implies that every workflow ends with a single node, which can be a merge point where parallel branches converge. Nodes pick the sequential first exit by default, unless explicitly routed. If implicit parallelism is desired, enable this on a node by node basis with the `DisableSequentialFlow` node option.
-- **Dynamic Parallelism via Activities**: Orchid can support dynamic fan-out/fan-in or dynamic parallelism scenarios, where the number of parallel tasks is determined at runtime. This is achieved by using activities to spawn child workflows or goroutines. However, panics in spawned goroutines _MAY_ still crash the program.
+- **Sequential Flow by Default**: Orchid executes nodes sequentially, following a single path even if multiple outgoing edges are present. When a node has multiple outgoing edges, it deterministically picks the first next node based on the order nodes were added, ensuring consistent execution. This default behavior helps prevent unintended parallelism.
+- **Enabling Parallelism**: To enable parallel execution from a node, you must explicitly set the `DisableSequentialFlow` option on that node. By doing so, you allow the node to execute multiple outgoing paths in parallel. This explicit control ensures that parallelism occurs only where intended.
+
+```go
+wf.AddNode(orchid.NewNode("ParallelNode", orchid.WithDisableSequentialFlow())).
+    // other nodes...
+```
+A workflow ends with a single node, which can be a merge point where parallel branches converge. A merge point is a special node type "reducer" with the signature `func([][]byte) []byte` that combines the outputs of parallel branches. See the [examples/parallel](./examples/parallel) example for more details.
+- **Dynamic Parallelism via Activities**: Orchid can support dynamic fan-out/fan-in or dynamic parallelism scenarios, where the number of parallel tasks is determined at runtime. This is achieved by using activities to spawn child workflows or goroutines. Note that panics in spawned, client side goroutines _MAY_ be able to crash the program and cannot be recovered by orchid. See the [examples/dynamic-parallelism](./examples/dynamic-parallelism) example for more details.
 - **Activity Panic Recovery**: Activity panics can be recovered in both top-level and child workflows. Persisted workflows can therefore continue after code fixes. This only works for panics in activities that don't occur in goroutines spawned by activities. The functional option `WithFailWorkflowOnActivityPanic` of the orchestrator can be used terminate workflow and mark them non-restorable after activity panics.
+- **Dynamic Routing Over Explicit Edges**: With dynamic routing is used (e.g., `orchid.RouteTo("nodeName")`), the orchestrator can route dynamically to a path.
 - **Forced Transition Support**: By default, orchid does not support forced transitions between nodes. This is to prevent unintended side effects and ensure that workflows are executed as designed. If forced transitions are required, enable this on the orchestrator with `WithForcedTransitions`.
 - **Idempotency and Error Handling**: Orchid ensures that workflows and activities have unique execution IDs to prevent duplicate processing. All activities are executed at-least-once, so they _MUST BE_ **idempotent** to ensure that retries do not cause unintended side effects. Pass the `ActivityToken` to external systems to ensure idempotency and fault tolerance.
 - **Atomicity and Side Effects**: Activities _SHALL_ perform **atomic operations**, non-atomicity (like partial database updates) may leave the system in an inconsistent state if they fail midway.
@@ -210,5 +219,18 @@ Register your activities using `TypedActivity`:
 ```go
 o.RegisterActivity("A", orchid.TypedActivity(fnA))
 ```
+
+## Caching
+
+Orchid provides a snapshotter activity that can either save and replay the full payload or cache specific fields. This can be useful for caching data from external sources or expensive operations to avoid recomputation.
+
+```go
+fieldsToCache := []string{"user.name", "user.email", "transaction.id"}
+
+checkpoint := orchid.NewSnapshotter(fieldsToCache)
+o.RegisterActivity("checkpoint", checkpoint.Save)
+```
+
+Note that even with typed activities, snapshotting can be used as we operate on JSON data.
 
 See the `./examples` directory for different usage scenarios.
