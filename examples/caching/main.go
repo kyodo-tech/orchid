@@ -42,7 +42,7 @@ func main() {
 	o.Use(middleware.Logging)
 
 	// Initialize Snapshotter
-	snapshotter := orchid.NewShapshotter()
+	snapshotter := orchid.NewSnapshotter()
 
 	// Register activities
 	o.RegisterActivity("fetchData", orchid.TypedActivity(fetchData))     // Fetch data initially

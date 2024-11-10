@@ -120,18 +120,40 @@ func (wf *Workflow) ExportDotToFile(filename string, optionalChildWorkflows map[
 	return nil
 }
 
+// Define NodeMetadata struct with optional description and links
+type NodeMetadata struct {
+	Description string     // Node description, which may include line breaks
+	Links       []NodeLink // List of links to display within the node
+	Standalone  bool       // Flag indicating if the node should be rendered as standalone
+
+}
+
+// Define NodeLink struct for each link's name and URI
+type NodeLink struct {
+	Name string // Display text for the link
+	URI  string // URL for the link
+}
+
 // ExportMermaid generates the Mermaid representation of the workflow.
 // Optionally, it can include child workflows as subgraphs and requires a map of
-// node names and the corresponding child workflows they spawn.
-func (wf *Workflow) ExportMermaid(indent string, nodeToChildWorkflows map[string]*Workflow) []byte {
+// node names to corresponding child workflows they spawn. It also accepts an optional
+// nodeToMetadata parameter to add descriptions and links to nodes.
+func (wf *Workflow) ExportMermaid(indent string, nodeToChildWorkflows map[string]*Workflow, nodeToMetadata map[string]NodeMetadata) []byte {
 	var mermaidData []byte
 	mermaidData = append(mermaidData, []byte("flowchart TD\n")...)
 
 	visited := make(map[string]bool)
 	classAssignments := make([]string, 0)
-	mermaidData = append(mermaidData, wf.exportMermaidRecursive(indent+"    ", visited, nodeToChildWorkflows, "", &classAssignments)...)
+	mermaidData = append(mermaidData, wf.exportMermaidRecursive(indent+"    ", visited, nodeToChildWorkflows, nodeToMetadata, "", &classAssignments)...)
 
 	mermaidData = append(mermaidData, []byte("\n")...)
+
+	// Render standalone nodes separately
+	for node, metadata := range nodeToMetadata {
+		if metadata.Standalone {
+			mermaidData = append(mermaidData, []byte(wf.renderStandaloneNode(indent, node, metadata))...)
+		}
+	}
 
 	// Append collected class assignments after subgraphs
 	for _, classAssign := range classAssignments {
@@ -147,7 +169,24 @@ func (wf *Workflow) ExportMermaid(indent string, nodeToChildWorkflows map[string
 	return mermaidData
 }
 
-func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]bool, nodeToChildWorkflows map[string]*Workflow, prefix string, classAssignments *[]string) []byte {
+// Function to render standalone nodes
+func (wf *Workflow) renderStandaloneNode(indent, nodeName string, metadata NodeMetadata) string {
+	var nodeLabel = nodeName
+
+	// Include description and links if available
+	if metadata.Description != "" {
+		nodeLabel += "<br>" + metadata.Description
+	}
+	for _, link := range metadata.Links {
+		nodeLabel += fmt.Sprintf(" <b><a href='%s' target='_blank'>%s</a></b>", link.URI, link.Name)
+	}
+
+	// Return standalone node definition
+	return indent + nodeName + "[" + nodeLabel + "]\n"
+}
+
+// Recursive function to render nodes, edges, and metadata as Mermaid syntax
+func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]bool, nodeToChildWorkflows map[string]*Workflow, nodeToMetadata map[string]NodeMetadata, prefix string, classAssignments *[]string) []byte {
 	var mermaidData []byte
 
 	if visited[wf.Name] {
@@ -158,8 +197,22 @@ func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]boo
 	// Start by defining starting nodes to ensure they appear at the top
 	startNodes := wf.startingNodes()
 	for _, node := range startNodes {
+		// Check if the node is standalone; if so, skip in this section
+		if metadata, ok := nodeToMetadata[node.ActivityName]; ok && metadata.Standalone {
+			continue
+		}
+
 		nodeName := prefix + node.ActivityName
 		nodeLabel := node.ActivityName
+
+		// Check for metadata and add description and links if present
+		if metadata, ok := nodeToMetadata[node.ActivityName]; ok {
+			nodeLabel += "<br>" + metadata.Description
+			for _, link := range metadata.Links {
+				nodeLabel += fmt.Sprintf(" <b><a href='%s' target='_blank'>%s</a></b>", link.URI, link.Name)
+			}
+		}
+
 		nodeLine := indent + nodeName + "[" + nodeLabel + "]\n"
 		mermaidData = append(mermaidData, []byte(nodeLine)...)
 
@@ -176,8 +229,23 @@ func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]boo
 		if wf.isStartNode(node) {
 			continue // Skip already rendered starting nodes
 		}
+
+		// Check if the node is standalone; if so, skip in this section
+		if metadata, ok := nodeToMetadata[node.ActivityName]; ok && metadata.Standalone {
+			continue
+		}
+
 		nodeName := prefix + node.ActivityName
 		nodeLabel := node.ActivityName
+
+		// Check for metadata and add description and links if present
+		if metadata, ok := nodeToMetadata[node.ActivityName]; ok {
+			nodeLabel += "<br>" + metadata.Description
+			for _, link := range metadata.Links {
+				nodeLabel += fmt.Sprintf(" <b><a href='%s' target='_blank'>%s</a></b>", link.URI, link.Name)
+			}
+		}
+
 		nodeLine := indent + nodeName + "[" + nodeLabel + "]\n"
 		mermaidData = append(mermaidData, []byte(nodeLine)...)
 
@@ -214,7 +282,7 @@ func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]boo
 
 			// Render the child workflow subgraph recursively
 			mermaidData = append(mermaidData, []byte(indent+"subgraph "+edge.To+"\n")...)
-			mermaidData = append(mermaidData, childWf.exportMermaidRecursive(indent+"    ", visited, nodeToChildWorkflows, childPrefix, classAssignments)...)
+			mermaidData = append(mermaidData, childWf.exportMermaidRecursive(indent+"    ", visited, nodeToChildWorkflows, nodeToMetadata, childPrefix, classAssignments)...)
 			mermaidData = append(mermaidData, []byte(indent+"end\n")...)
 		} else if childWf, exists := nodeToChildWorkflows[edge.From]; exists {
 			// 'From' node is a child workflow
@@ -245,8 +313,8 @@ func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]boo
 //go:embed templates/mermaid.html
 var mermaidHTML string
 
-func (wf *Workflow) ExportMermaidHTML(indent string, optionalChildWorkflows map[string]*Workflow) ([]byte, error) {
-	mermaidData := wf.ExportMermaid(indent, optionalChildWorkflows)
+func (wf *Workflow) ExportMermaidHTML(indent string, optionalChildWorkflows map[string]*Workflow, nodeToMetadata map[string]NodeMetadata) ([]byte, error) {
+	mermaidData := wf.ExportMermaid(indent, optionalChildWorkflows, nodeToMetadata)
 
 	// render template with map of .Flowchart
 	tmpl, err := template.New("mermaid").Parse(mermaidHTML)
@@ -266,8 +334,8 @@ func (wf *Workflow) ExportMermaidHTML(indent string, optionalChildWorkflows map[
 	return buf.Bytes(), nil
 }
 
-func (wf *Workflow) ExportMermaidToFile(filename string, optionalChildWorkflows map[string]*Workflow) error {
-	mermaidData := wf.ExportMermaid("    ", optionalChildWorkflows)
+func (wf *Workflow) ExportMermaidToFile(filename string, optionalChildWorkflows map[string]*Workflow, nodeToMetadata map[string]NodeMetadata) error {
+	mermaidData := wf.ExportMermaid("    ", optionalChildWorkflows, nodeToMetadata)
 
 	err := os.WriteFile(filename, []byte(mermaidData), 0644)
 	if err != nil {

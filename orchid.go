@@ -620,8 +620,9 @@ type Orchestrator struct {
 
 	middlewares []Middleware
 
-	forcedTransitionsAllowed    bool
-	failWorkflowOnActivityPanic bool
+	forcedTransitionsAllowed     bool
+	disableActivityPanicRecovery bool
+	failWorkflowOnActivityPanic  bool
 }
 
 func NewOrchestrator(options ...OrchestratorOption) *Orchestrator {
@@ -670,6 +671,12 @@ func WithFailWorkflowOnActivityPanic() OrchestratorOption {
 func WithForcedTransitions() OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.forcedTransitionsAllowed = true
+	}
+}
+
+func WithDisableActivityPanicRecovery() OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.disableActivityPanicRecovery = true
 	}
 }
 
@@ -786,16 +793,6 @@ func ActivityName(ctx context.Context) string {
 	return ""
 }
 
-func ConfigString(ctx context.Context, key string) (string, bool) {
-	if v, ok := Config(ctx, key); ok {
-		if val, ok := v.(string); ok {
-			return val, ok
-		}
-	}
-
-	return "", false
-}
-
 func ConfigInt(ctx context.Context, key string) (int, bool) {
 	if v, ok := Config(ctx, key); ok {
 		if val, ok := v.(int); ok {
@@ -804,6 +801,79 @@ func ConfigInt(ctx context.Context, key string) (int, bool) {
 	}
 
 	return 0, false
+}
+
+func ConfigString(ctx context.Context, key string) (string, bool) {
+	if v, ok := Config(ctx, key); ok {
+		if val, ok := v.(string); ok {
+			return val, ok && val != ""
+		}
+	}
+
+	return "", false
+}
+
+func (n *Node) ConfigString(key string) (string, bool) {
+	if n.Config == nil {
+		return "", false
+	}
+	if v, ok := n.Config[key]; ok {
+		if val, ok := v.(string); ok {
+			return val, ok && val != ""
+		}
+	}
+
+	return "", false
+}
+
+func (n *Node) GetConfigIntArray(key string) ([]int, bool) {
+	if n.Config == nil {
+		return nil, false
+	}
+
+	if v, ok := n.Config[key]; ok {
+		if intArray, ok := v.([]int); ok {
+			return intArray, true
+		}
+		if val, ok := v.([]interface{}); ok {
+			intArray := make([]int, len(val))
+			for i, v := range val {
+				if num, ok := v.(int); ok {
+					intArray[i] = num
+				} else {
+					return nil, false
+				}
+			}
+			return intArray, true
+		}
+	}
+
+	return nil, false
+}
+
+func (n *Node) GetConfigStringArray(key string) ([]string, bool) {
+	if n.Config == nil {
+		return nil, false
+	}
+
+	if v, ok := n.Config[key]; ok {
+		if stringArray, ok := v.([]string); ok {
+			return stringArray, true
+		}
+		if val, ok := v.([]interface{}); ok {
+			stringArray := make([]string, len(val))
+			for i, v := range val {
+				if str, ok := v.(string); ok {
+					stringArray[i] = str
+				} else {
+					return nil, false
+				}
+			}
+			return stringArray, true
+		}
+	}
+
+	return nil, false
 }
 
 type startKey struct{}
@@ -1337,15 +1407,17 @@ var ErrPanic = errors.New("panic in activity")
 // executeNode executes a single node and returns its output.
 func (o *Orchestrator) executeNode(ctx context.Context, node *Node, input []byte) (output []byte, activityError error) {
 	// Defer a function to recover from panics and log the panic details.
-	defer func() {
-		if r := recover(); r != nil {
-			// Log the panic and return a generic error
-			Logger(ctx).Error("panic in executeNode", "node", node.ActivityName, "panic", r)
-			o.logWorkflowStep(ctx, node, input, nil, fmt.Errorf("panic: %v", r), persistence.StatePanicked)
-			activityError = fmt.Errorf("activity %s: panic occurred: %v: %w", node.ActivityName, r, ErrPanic)
-			output = nil
-		}
-	}()
+	if !o.disableActivityPanicRecovery {
+		defer func() {
+			if r := recover(); r != nil {
+				// Log the panic and return a generic error
+				Logger(ctx).Error("panic in executeNode", "node", node.ActivityName, "panic", r)
+				o.logWorkflowStep(ctx, node, input, nil, fmt.Errorf("panic: %v", r), persistence.StatePanicked)
+				activityError = fmt.Errorf("activity %s: panic occurred: %v: %w", node.ActivityName, r, ErrPanic)
+				output = nil
+			}
+		}()
+	}
 
 	ctx = node.withActivityStartTime(ctx, time.Now().UTC())
 
@@ -1550,8 +1622,7 @@ func (o *Orchestrator) RestorableWorkflows(ctx context.Context) (RestorableWorkf
 				var dynamicRoute DynamicRoute
 				if step.Error != nil {
 					unescapedJson := *step.Error
-					err := dynamicRoute.UnmarshalJSON([]byte(unescapedJson))
-					if err == nil {
+					if err := dynamicRoute.UnmarshalJSON([]byte(unescapedJson)); err == nil {
 						completedNodeErrors[step.NodeID] = &dynamicRoute
 					}
 				}
