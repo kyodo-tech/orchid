@@ -152,24 +152,6 @@ func (s *SQLitePersister) LoadOpenWorkflows(ctx context.Context, workflowName st
 	return statuses, nil
 }
 
-// LatestWorkflowStepByWorkflowID returns the last log entry for the given workflowID.
-// func (s *SQLitePersister) LatestWorkflowStepByWorkflowID(ctx context.Context, workflowID string) (*WorkflowLogEntry, error) {
-// 	query := `SELECT node_id, activity_name, activity_token, state, input, output, config, error, timestamp, duration FROM workflow_execution_log WHERE workflow_id = ? ORDER BY log_id DESC LIMIT 1`
-// 	var entry WorkflowLogEntry
-// 	var configStr, errorStr string
-// 	err := s.DB.QueryRowContext(ctx, query, workflowID).Scan(&entry.NodeID, &entry.ActivityName, &entry.ActivityToken, &entry.ActivityState, &entry.Input, &entry.Output, &configStr, &errorStr, &entry.Timestamp, &entry.Duration)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	if configStr != "" {
-// 		json.Unmarshal([]byte(configStr), &entry.Config)
-// 	}
-// 	if errorStr != "" {
-// 		json.Unmarshal([]byte(errorStr), &entry.Error)
-// 	}
-// 	return &entry, nil
-// }
-
 // Adjusted LoadWorkflowSteps method in SQLitePersister
 func (s *SQLitePersister) LoadWorkflowSteps(ctx context.Context, workflowID string) ([]*WorkflowLogEntry, error) {
 	query := `SELECT node_id, activity_name, input, output, error, state FROM workflow_execution_log WHERE workflow_id = ? ORDER BY timestamp ASC`

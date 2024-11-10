@@ -134,6 +134,15 @@ func (wf *Workflow) Then(node *Node) *Workflow {
 	return wf
 }
 
+func (wf *Workflow) WithLabel(label string) *Workflow {
+	wf.getLastEdge().Label = &label
+	return wf
+}
+
+func (wf *Workflow) getLastEdge() *Edge {
+	return wf.Edges[len(wf.Edges)-1]
+}
+
 func (wf *Workflow) getLastNode() *Node {
 	var lastNode *Node
 	maxID := int64(-1)
@@ -148,6 +157,11 @@ func (wf *Workflow) getLastNode() *Node {
 
 func (wf *Workflow) Link(from, to string) *Workflow {
 	wf.addEdge(&Edge{From: from, To: to})
+	return wf
+}
+
+func (wf *Workflow) LinkWithLabel(from, to string, label string) *Workflow {
+	wf.addEdge(&Edge{From: from, To: to, Label: &label})
 	return wf
 }
 
@@ -181,6 +195,7 @@ func (wf *Workflow) Import(workflow []byte) error {
 	if err := json.Unmarshal(workflow, tmp); err != nil {
 		return err
 	}
+	wf.Name = tmp.Name
 
 	for _, node := range tmp.Nodes {
 		wf.AddNode(node)
@@ -349,6 +364,15 @@ func (wf *Workflow) startingGraphNodes() []graph.Node {
 	return startNodes
 }
 
+func (wf *Workflow) isStartNode(node *Node) bool {
+	for _, n := range wf.startingGraphNodes() {
+		if n.ID() == node.ID {
+			return true
+		}
+	}
+	return false
+}
+
 func (wf *Workflow) startingNodes() []*Node {
 	var startNodes []*Node
 	for _, node := range wf.Nodes {
@@ -508,11 +532,11 @@ func (n *Node) IsRetryableError(err error) bool {
 }
 
 type RetryPolicy struct {
-	MaxRetries               int
-	InitInterval             time.Duration
-	MaxInterval              time.Duration
-	BackoffCoefficient       float64
-	NonRetriableErrorReasons []string
+	MaxRetries               int           `json:"max_retries"`
+	InitInterval             time.Duration `json:"init_interval"`
+	MaxInterval              time.Duration `json:"max_interval"`
+	BackoffCoefficient       float64       `json:"backoff_coefficient"`
+	NonRetriableErrorReasons []string      `json:"non_retriable_error_reasons"`
 }
 
 // backoff calculates the exponential backoff time for a given attempt.
@@ -542,8 +566,9 @@ func DefaultRetryPolicy() *RetryPolicy {
 }
 
 type Edge struct {
-	From string `json:"from"`
-	To   string `json:"to"`
+	From  string  `json:"from"`
+	To    string  `json:"to"`
+	Label *string `json:"label,omitempty"`
 }
 
 type Activity func(ctx context.Context, input []byte) (output []byte, err error)

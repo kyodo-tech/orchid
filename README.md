@@ -121,6 +121,55 @@ Which is available in activities:
 orchid.Logger(ctx).Error("Error executing task", "task", taskName, "error", err)
 ```
 
+## Graph Visualization with Mermaid
+
+Orchid supports importing and exporting workflows in [Mermaid](https://mermaid.js.org/) format, enabling clear visual representation of workflows and seamless integration with Mermaid-compatible tools. Labels on nodes and edges enhance readability and make the workflows easier to interpret.
+
+### Exporting to Mermaid
+
+You can export an Orchid workflow to Mermaid syntax for visualization. Each node and edge label can be customized, supporting descriptions, links, and shapes (e.g., decision nodes). Exported workflows are ideal for documentation, debugging, or sharing with non-technical stakeholders.
+
+```go
+mermaidData := wf.ExportMermaid("  ", nil, nil)
+fmt.Println(string(mermaidData))
+```
+
+### Importing from Mermaid
+
+Orchid also supports importing workflows defined in Mermaid syntax. This allows you to define workflows graphically and load them directly into Orchid, enhancing collaboration and workflow iteration.
+
+```go
+mermaidDefinition := `
+    flowchart TD
+        A[Start] --> B{Decision}
+        B -- "Yes" --> C[Option 1]
+        B -- "No" --> D[Option 2]
+        C --> E[End]
+        D --> E
+`
+wf, err := orchid.ImportMermaid("mermaid_workflow", mermaidDefinition)
+if err != nil {
+    log.Fatalf("Failed to import Mermaid workflow: %v", err)
+}
+```
+
+With Mermaid import/export, you can visualize, define, and refine workflows, expanding the ways orchid can integrate into your development workflow.
+
+### Code Generation
+
+Similar to Mermaid import/export, orchid allows to generate Go code from workflow definitions. Going from Mermaid or JSON to Go code enables integration of visual workflows into Go code.
+
+```go
+code, err := wf.Codegen()
+if err != nil {
+    log.Fatalf("Failed to generate code: %v", err)
+}
+
+fmt.Println(code) // Print or save the generated code
+```
+
+The generated code reflects the workflow structure, using `AddNode`, `Then`, and `Link` calls, and can be integrated into a new orchid Go project.
+
 ## Persistence and Fault Tolerance
 
 Orchid supports fault tolerance through state persistence and recovery mechanisms. By providing an optional persister, Orchid can recover the state of workflows after failures. The persistence layer _MUST_ accurately reflect the state of the workflow to avoid incorrect restoration. Cyclic dependencies, disconnected graphs, or malformed workflows _CAN_ cause the restoration to fail or behave unpredictably. Well-formed workflows recover at the last non-parallel node, replay successful node executions until the failure point, and retry the failed nodes.
