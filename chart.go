@@ -209,23 +209,60 @@ func (wf *Workflow) exportMermaidRecursive(indent string, visited map[string]boo
 		fromNode := prefix + edge.From
 		toNode := prefix + edge.To
 
-		// Handle edge label if present
-		var edgeConnector string
-		if edge.Label != nil {
-			edgeConnector = fmt.Sprintf(" -- \"%s\" --> ", *edge.Label)
-		} else {
-			edgeConnector = " --> "
-		}
+		if childWf, exists := nodeToChildWorkflows[edge.To]; exists {
+			// 'To' node is a child workflow
+			childPrefix := edge.To + "_"
+			entryNodes := childWf.startingNodes()
 
-		// Regular edge
-		mermaidData = append(mermaidData, []byte(indent)...)
-		mermaidData = append(mermaidData, []byte(fromNode)...)
-		mermaidData = append(mermaidData, []byte(edgeConnector)...)
-		mermaidData = append(mermaidData, []byte(toNode)...)
-		mermaidData = append(mermaidData, []byte("\n")...)
+			// Connect parent node to child workflow's entry nodes
+			for _, entryNode := range entryNodes {
+				mermaidData = append(mermaidData, []byte(indent)...)
+				mermaidData = append(mermaidData, []byte(fromNode)...)
+				mermaidData = append(mermaidData, []byte(edgeConnector(edge))...)
+				mermaidData = append(mermaidData, []byte(childPrefix+entryNode.ActivityName)...)
+				mermaidData = append(mermaidData, []byte("\n")...)
+			}
+
+			// Render the child workflow subgraph recursively
+			mermaidData = append(mermaidData, []byte(indent+"subgraph "+edge.To+"\n")...)
+			mermaidData = append(mermaidData, childWf.exportMermaidRecursive(indent+"    ", visited, nodeToChildWorkflows, nodeToMetadata, childPrefix, classAssignments)...)
+			mermaidData = append(mermaidData, []byte(indent+"end\n")...)
+		} else if childWf, exists := nodeToChildWorkflows[edge.From]; exists {
+			// 'From' node is a child workflow
+			childPrefix := edge.From + "_"
+			exitNodes := childWf.exitNodes()
+
+			// Connect child workflow's exit nodes to parent node
+			for _, exitNode := range exitNodes {
+				mermaidData = append(mermaidData, []byte(indent)...)
+				mermaidData = append(mermaidData, []byte(childPrefix+exitNode.ActivityName)...)
+				mermaidData = append(mermaidData, []byte(edgeConnector(edge))...)
+				mermaidData = append(mermaidData, []byte(toNode)...)
+				mermaidData = append(mermaidData, []byte("\n")...)
+			}
+		} else {
+			// Regular edge
+			mermaidData = append(mermaidData, []byte(indent)...)
+			mermaidData = append(mermaidData, []byte(fromNode)...)
+			mermaidData = append(mermaidData, []byte(edgeConnector(edge))...)
+			mermaidData = append(mermaidData, []byte(toNode)...)
+			mermaidData = append(mermaidData, []byte("\n")...)
+		}
 	}
 
 	return mermaidData
+}
+
+func edgeConnector(edge *Edge) string {
+	// Handle edge label if present
+	var edgeConnector string
+	if edge.Label != nil {
+		edgeConnector = fmt.Sprintf(" -- \"%s\" --> ", *edge.Label)
+	} else {
+		edgeConnector = " --> "
+	}
+
+	return edgeConnector
 }
 
 func (wf *Workflow) isParallelNode(node *Node) bool {

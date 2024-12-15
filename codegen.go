@@ -235,11 +235,3 @@ func formatValue(v interface{}) (string, error) {
 		return fmt.Sprintf("%v", val), nil
 	}
 }
-
-func quoteStrings(strs []string) []string {
-	quoted := make([]string, len(strs))
-	for i, s := range strs {
-		quoted[i] = fmt.Sprintf("%q", s)
-	}
-	return quoted
-}

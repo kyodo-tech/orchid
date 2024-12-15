@@ -147,7 +147,6 @@ func main() {
 	}
 
 	// demo exports
-
 	/*
 		wfout, _ := wf.Export()
 		if err := os.WriteFile("wf.json", wfout, 0644); err != nil {
@@ -158,7 +157,7 @@ func main() {
 		mermaidHTML, err := wf.ExportMermaidHTML("", map[string]*orchid.Workflow{
 			"StartCw1": cw1,
 			"StartCw2": cw2,
-		})
+		}, nil)
 		if err != nil {
 			fmt.Println(err)
 		}

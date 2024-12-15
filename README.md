@@ -2,13 +2,15 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/kyodo-tech/orchid)](https://goreportcard.com/report/github.com/kyodo-tech/orchid)
 [![GoDoc](https://godoc.org/github.com/kyodo-tech/orchid?status.svg)](https://godoc.org/github.com/kyodo-tech/orchid)
+[![English](https://img.shields.io/badge/lang-English-blue)](README.md)
+[![日本語](https://img.shields.io/badge/lang-日本語-red)](README.ja.md)
 
 Orchid is a lightweight Go framework for orchestrating data-driven workflows. It combines concepts from Flow-Based Programming (FBP) and workflow engines to provide a simple, fault-tolerant solution for managing data flows and task execution within applications.
 
 Inspired by tools like [Uber Cadence](https://github.com/uber/cadence) and [Temporal.io](https://temporal.io/), Orchid offers a minimalistic approach to workflow orchestration without the complexity and heavy dependencies often found in other solutions. It was created out of a lack of a simple executor such as [temporalite](https://github.com/temporalio/temporalite), but is no longer maintained. Other solutions are often complex with many dependencies.
 
 Orchid is designed with the following principles in mind:
-- **Simplicity**: Designed to be easy to understand and use, with minimal boilerplate. Orchid's core is around 1k lines of code.
+- **Simplicity**: Designed to be easy to understand and use, with minimal boilerplate. Orchid's core is less than 2k lines of code.
 - **Data Passing**: Facilitates data passing between nodes using byte arrays, aligning with flow-based programming paradigms.
 - **Dynamic Routing**: Supports dynamic routing based on data and error conditions, enabling flexible workflow logic.
 - **Sequential Execution by Default**: Executes workflows sequentially by default. When a node has multiple outgoing edges, it deterministically follows the first path unless parallelism is explicitly enabled.
