@@ -1,0 +1,44 @@
+flowchart TD
+      A[Identify Newsworthy Topics]
+      B{Check for Existing Coverage}
+      C[Assign Story & Define Angle]
+      D[Research & Fact-Gathering]
+      E[Develop Story Hypothesis & Outline]
+      F[Draft Writing]
+      G[Editorial Review]
+      H{Legal and Ethical Review}
+      I[Final Edits & Approval]
+      J[Publishing]
+      K[Follow-Up & Updates]
+      L{New Developments?}
+      M[End Process]
+
+      A --> B
+      B -- "Overlap Found" --> A
+      B --> C
+      C -- "Refine Angle" --> A
+      C --> D
+      D -- "Issues in Research" --> C
+      D --> E
+      E -- "Outline Gaps Found" --> D
+      E --> F
+      F -- "Gaps in Draft" --> D
+      F --> G
+      G -- "Major Edits Needed" --> F
+      G --> H
+      H -- "Compliance Issues" --> F
+      H --> I
+      I -- "Fact-Checking Failure" --> G
+      I --> J
+      J -- "Post-Publication Updates Needed" --> D
+      J --> K
+      K --> L
+      L -- "Yes" --> D
+      L --> M
+
+class M endNode
+class A startNode
+
+classDef startNode fill:#9f6,stroke:#333,stroke-width:4px;
+classDef endNode fill:#f96,stroke:#333,stroke-width:4px;
+classDef parallelNode fill:#6cf,stroke:#333,stroke-width:2px;

@@ -17,6 +17,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/kyodo-tech/orchid"
 )
@@ -28,16 +29,28 @@ func main() {
 	}
 
 	filename := os.Args[1]
-	jsonWorkflow, err := os.ReadFile(filename)
+	filebody, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 
 	wf := orchid.NewWorkflow("")
-	err = wf.Import(jsonWorkflow)
-	if err != nil {
-		fmt.Println(err)
+
+	if strings.HasSuffix(filename, ".json") {
+		err = wf.Import(filebody)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	} else if strings.HasSuffix(filename, ".mermaid") || strings.HasSuffix(filename, ".mmd") {
+		wf, err = orchid.ImportMermaid("mermaid import", string(filebody))
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Println("Unsupported file extension")
 		os.Exit(1)
 	}
 
