@@ -21,8 +21,8 @@ import (
 	"os"
 	"time"
 
-	orchid "github.com/kyodo-tech/orchid"
 	"github.com/google/uuid"
+	orchid "github.com/kyodo-tech/orchid"
 )
 
 func CronTrigger(ctx context.Context, data []byte) ([]byte, error) {
