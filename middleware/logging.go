@@ -25,21 +25,22 @@ var _ orchid.Middleware = Logging
 
 func Logging(activity orchid.Activity) orchid.Activity {
 	return func(ctx context.Context, input []byte) ([]byte, error) {
+		id := orchid.WorkflowID(ctx)
 		logger := orchid.Logger(ctx)
 		name := orchid.ActivityName(ctx)
 
-		logger.Info("Starting activity", "activity", name)
+		logger.Info("Starting activity", "activity", name, "workflow-id", id)
 		output, outErr := activity(ctx, input)
 
 		var dynamicRoute *orchid.DynamicRoute
 		dynamicRouteErr := errors.As(outErr, &dynamicRoute)
 
 		if outErr != nil && !dynamicRouteErr || dynamicRouteErr && dynamicRoute.Err != nil {
-			logger.Error("Activity failed", "activity", name, "error", outErr)
+			logger.Error("Activity failed", "activity", name, "error", outErr, "workflow-id", id)
 		} else if dynamicRouteErr {
-			logger.Info("Activity completed with route", "activity", name, "route", dynamicRoute.Key)
+			logger.Info("Activity completed with route", "activity", name, "route", dynamicRoute.Key, "workflow-id", id)
 		} else {
-			logger.Info("Activity completed", "activity", name)
+			logger.Info("Activity completed", "activity", name, "workflow-id", id)
 		}
 		return output, outErr
 	}

@@ -11,7 +11,7 @@ Inspired by tools like [Uber Cadence](https://github.com/uber/cadence) and [Temp
 
 Orchid is designed with the following principles in mind:
 - **Simplicity**: Designed to be easy to understand and use, with minimal boilerplate. Orchid's core is less than 2k lines of code.
-- **Data Passing**: Facilitates data passing between nodes using byte arrays, aligning with flow-based programming paradigms.
+- **Data Passing**: Facilitates data passing between nodes using byte arrays (`[]byte`), aligning with flow-based programming paradigms. The engine does not impose the serialization format - inputs and outputs are opaque and may contain raw binary, JSON, Protobuf, or any application-defined encoding.
 - **Dynamic Routing**: Supports dynamic routing based on data and error conditions, enabling flexible workflow logic.
 - **Sequential Execution by Default**: Executes workflows sequentially by default. When a node has multiple outgoing edges, it deterministically follows the first path unless parallelism is explicitly enabled.
 - **Explicit Parallelism**: Allows explicit parallel execution through the `DisableSequentialFlow` node option. By setting this option on a node, you enable it to execute multiple outgoing paths in parallel, making parallelism an intentional design choice.

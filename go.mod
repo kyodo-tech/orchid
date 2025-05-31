@@ -1,6 +1,6 @@
 module github.com/kyodo-tech/orchid
 
-go 1.21.1
+go 1.22
 
 require (
 	github.com/google/uuid v1.6.0

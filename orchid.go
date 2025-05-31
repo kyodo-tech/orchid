@@ -455,6 +455,29 @@ func WithNodeConfig(config map[string]interface{}) NodeOption {
 	}
 }
 
+func WithNodeConfigs(configPairs ...interface{}) NodeOption {
+	return func(n *Node) {
+		// Initialize the config map if not already done
+		if n.Config == nil {
+			n.Config = make(map[string]interface{})
+		}
+
+		// Ensure configPairs are valid key-value pairs
+		for i := 0; i < len(configPairs); i += 2 {
+			if i+1 >= len(configPairs) {
+				panic("WithNodeConfigs requires key-value pairs")
+			}
+
+			key, ok := configPairs[i].(string)
+			if !ok {
+				panic("WithNodeConfigs requires keys to be strings")
+			}
+
+			n.Config[key] = configPairs[i+1]
+		}
+	}
+}
+
 func WithNodeRetryPolicy(policy *RetryPolicy) NodeOption {
 	return func(n *Node) {
 		n.RetryPolicy = policy
@@ -709,7 +732,6 @@ func (o *Orchestrator) LoadWorkflow(w *Workflow) error {
 	// check if activities are registered
 	for _, node := range w.Nodes {
 		if _, exists := o.registry[node.ActivityName]; !exists {
-			// panic(fmt.Sprintf("activity %s not registered", node.ActivityName))
 			return fmt.Errorf("activity %s: %w", node.ActivityName, ErrOrchestratorActivityNotFound)
 		}
 	}
@@ -794,7 +816,7 @@ func (r OrchestratorRegistry) Get(name string) (*Orchestrator, error) {
 	if o, ok := r[name]; ok {
 		return o, nil
 	}
-	return nil, fmt.Errorf("orchestrator %s not found", name)
+	return nil, fmt.Errorf("orchestrator '%s' not found", name)
 }
 
 type configKey struct{}
@@ -901,10 +923,10 @@ func (n *Node) GetConfigStringArray(key string) ([]string, bool) {
 	return nil, false
 }
 
-type startKey struct{}
+type startSyncKey struct{}
 
 func SyncExecutor(ctx context.Context) (Activity, bool) {
-	if v, ok := ctx.Value(startKey{}).(Activity); ok {
+	if v, ok := ctx.Value(startSyncKey{}).(Activity); ok {
 		return v, ok
 	}
 
@@ -988,6 +1010,20 @@ func WorkflowID(ctx context.Context) string {
 	return v
 }
 
+type registryKey struct{}
+
+func WithRegistry(ctx context.Context, registry OrchestratorRegistry) context.Context {
+	return context.WithValue(ctx, registryKey{}, registry)
+}
+
+func Registry(ctx context.Context) (OrchestratorRegistry, bool) {
+	if v, ok := ctx.Value(registryKey{}).(OrchestratorRegistry); ok {
+		return v, ok
+	}
+
+	return nil, false
+}
+
 type parentWorkflowIDKey struct{}
 
 func WithParentWorkflowID(ctx context.Context, id string) context.Context {
@@ -1022,7 +1058,7 @@ func IsNonRestorable(ctx context.Context) bool {
 }
 
 func (o *Orchestrator) withTriggerContext(ctx context.Context) context.Context {
-	ctx = context.WithValue(ctx, startKey{}, Activity(o.Start))
+	ctx = context.WithValue(ctx, startSyncKey{}, Activity(o.Start))
 	ctx = context.WithValue(ctx, startAsyncKey{}, Activity(o.StartAsync))
 
 	return ctx
@@ -1045,7 +1081,7 @@ func (o *Orchestrator) RunTriggers(ctx context.Context, input []byte) ([]byte, e
 	}
 
 	if !haveTrigger {
-		return nil, ErrWorkflowHasNoTriggers
+		return nil, fmt.Errorf("workflow %v: %w", o.workflow.Name, ErrWorkflowHasNoTriggers)
 	}
 
 	return nil, nil
@@ -1121,7 +1157,7 @@ func (o *Orchestrator) StartAsync(ctx context.Context, data []byte) (output []by
 		panic("no workflow loaded")
 	}
 
-	id := WorkflowID(ctx)
+	id := WorkflowID(ctx) // for idempotence, we don't randomly allocate here
 	if id == "" {
 		return nil, fmt.Errorf("execution ID not set")
 	}
@@ -1290,7 +1326,7 @@ func (n *Node) RetryAttempts(ctx context.Context) int {
 
 // executeNodeChain executes a chain of nodes and returns the output.
 // If the chain contains a merge point, the outputs are merged using the reducer
-// if present or uses the preceding fan-out nodes output. Parallel nodes must
+// if present or uses the preceeding fan-out nodes output. Parallel nodes must
 // converge at a merge node.
 func (o *Orchestrator) executeNodeChain(ctx context.Context, node *Node, data []byte) ([]byte, error) {
 	ctx = node.withActivityStartTime(ctx, time.Now().UTC())
@@ -1436,9 +1472,10 @@ func (o *Orchestrator) executeNode(ctx context.Context, node *Node, input []byte
 		defer func() {
 			if r := recover(); r != nil {
 				// Log the panic and return a generic error
-				Logger(ctx).Error("panic in executeNode", "node", node.ActivityName, "panic", r)
+				id := WorkflowID(ctx)
+				Logger(ctx).Error("panic in executeNode", "node", node.ActivityName, "workflow-id", id, "panic", r)
 				o.logWorkflowStep(ctx, node, input, nil, fmt.Errorf("panic: %v", r), persistence.StatePanicked)
-				activityError = fmt.Errorf("activity %s: panic occurred: %v: %w", node.ActivityName, r, ErrPanic)
+				activityError = fmt.Errorf("workflow %s: activity %s: panic occurred: %v: %w", id, node.ActivityName, r, ErrPanic)
 				output = nil
 			}
 		}()
