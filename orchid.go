@@ -666,7 +666,8 @@ type Orchestrator struct {
 	completedNodeOutput map[int64][]byte
 	completedNodeErrors map[int64]*DynamicRoute
 
-	middlewares []Middleware
+	middlewares    []Middleware
+	activityLoader func(*Node) (Activity, error)
 
 	forcedTransitionsAllowed     bool
 	disableActivityPanicRecovery bool
@@ -728,11 +729,24 @@ func WithDisableActivityPanicRecovery() OrchestratorOption {
 	}
 }
 
+func (o *Orchestrator) SetActivityLoader(loader func(node *Node) (Activity, error)) {
+	o.activityLoader = loader
+}
+
 func (o *Orchestrator) LoadWorkflow(w *Workflow) error {
 	// check if activities are registered
 	for _, node := range w.Nodes {
 		if _, exists := o.registry[node.ActivityName]; !exists {
-			return fmt.Errorf("activity %s: %w", node.ActivityName, ErrOrchestratorActivityNotFound)
+			dynamicallyLoadable := false
+			if o.activityLoader != nil {
+				_, err := o.activityLoader(node)
+				if err == nil {
+					dynamicallyLoadable = true
+				}
+			}
+			if !dynamicallyLoadable {
+				return fmt.Errorf("activity %s: %w", node.ActivityName, ErrOrchestratorActivityNotFound)
+			}
 		}
 	}
 
@@ -783,8 +797,16 @@ func (o *Orchestrator) Use(mw Middleware) {
 }
 
 func (o *Orchestrator) GetActivity(node *Node) (Activity, bool) {
-	activity, exists := o.registry[node.ActivityName]
-	return activity, exists
+	activity, ok := o.registry[node.ActivityName]
+	if !ok && o.activityLoader != nil {
+		var err error
+		activity, err = o.activityLoader(node)
+		if err == nil {
+			o.registry[node.ActivityName] = activity
+			ok = true
+		}
+	}
+	return activity, ok
 }
 
 func (o *Orchestrator) GetReducer(node *Node) (Reducer, bool) {

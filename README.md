@@ -5,11 +5,11 @@
 [![English](https://img.shields.io/badge/lang-English-blue)](README.md)
 [![日本語](https://img.shields.io/badge/lang-日本語-red)](README.ja.md)
 
-Orchid is a lightweight Go framework for orchestrating data-driven workflows. It combines concepts from Flow-Based Programming (FBP) and workflow engines to provide a simple, fault-tolerant solution for managing data flows and task execution within applications.
+Orchid is a lightweight Go framework for orchestrating data-driven workflows. It combines concepts from Flow-Based Programming (FBP) and workflow engines to provide a simple, fault-tolerant solution for managing data flows and task execution within applications. Orchid allows to combine dynamic graph loading (e.g. from Mermaid), runtime activity injection (via subprocesses, WASM, etc.), stateless activity execution (`[]byte` in/out), to achieve a hot-pluggable, language-agnostic, persistent workflow engine - with zero coupling to implementation language or build process.
 
-Inspired by tools like [Uber Cadence](https://github.com/uber/cadence) and [Temporal.io](https://temporal.io/), Orchid offers a minimalistic approach to workflow orchestration without the complexity and heavy dependencies often found in other solutions. It was created out of a lack of a simple executor such as [temporalite](https://github.com/temporalio/temporalite), but is no longer maintained. Other solutions are often complex with many dependencies.
+Originally inspired by tools like [Uber Cadence](https://github.com/uber/cadence) and [Temporal.io](https://temporal.io/), Orchid offers a more minimal approach to workflow orchestration without the complexity and heavy dependencies found in other solutions. It was created out of a lack of a simple executor such as [temporalite](https://github.com/temporalio/temporalite), which is no longer maintained.
 
-Orchid is designed with the following principles in mind:
+Orchid is designed with the following principles:
 - **Simplicity**: Designed to be easy to understand and use, with minimal boilerplate. Orchid's core is less than 2k lines of code.
 - **Data Passing**: Facilitates data passing between nodes using byte arrays (`[]byte`), aligning with flow-based programming paradigms. The engine does not impose the serialization format - inputs and outputs are opaque and may contain raw binary, JSON, Protobuf, or any application-defined encoding.
 - **Dynamic Routing**: Supports dynamic routing based on data and error conditions, enabling flexible workflow logic.
@@ -202,6 +202,29 @@ o := orchid.NewOrchestratorWithWorkflow(wf,
 )
 ```
 
+## Dynamic Activity Loading
+
+Orchid supports runtime-resolved activities, allowing workflows to call external programs, scripts, or modules without recompilation. Activity resolution is delegated to a user-defined loader, which receives the node and returns an executable function.
+
+This enables hot-pluggable execution across runtimes such as shell, Python, WebAssembly, or remote services. Activities can be dispatched by name prefix or node metadata. For example, using a Mermaid workflow chart:
+
+```mermaid
+flowchart TD
+    A[sh:hello] --> B[sh:world]
+```
+
+With a loader:
+
+```go
+orch.SetActivityLoader(DispatchingLoader(map[string]func(string) (orchid.Activity, error){
+    "sh:": ShellScriptLoader("./scripts"),
+}))
+```
+
+Orchid can execute `./scripts/hello.sh` and `./scripts/world.sh`, passing input via stdin and collecting output from stdout. Workflows become fully dynamic—defined in text, resolved at runtime, composed of language-agnostic building blocks.
+
+See [`examples/dynamic-activity-loader`](./examples/dynamic-activity-loader) for a complete reference.
+
 ## Middleware Support
 
 Middlewares allow wrapping activities with additional functionality, such as logging, error handling, or custom serialization. We can apply cross-cutting concerns consistently across activities without modifying their core logic.
@@ -233,12 +256,12 @@ For example, a logging middleware can be defined as follows:
 
 ```go
 func SomeMiddleware(activity orchid.Activity) orchid.Activity {
-	return func(ctx context.Context, input []byte) ([]byte, error) {
+    return func(ctx context.Context, input []byte) ([]byte, error) {
         // pre process
-		output, outErr := activity(ctx, input)
+        output, outErr := activity(ctx, input)
         // post process
-		return output, outErr
-	}
+        return output, outErr
+    }
 }
 ```
 
